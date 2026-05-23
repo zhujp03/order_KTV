@@ -799,3 +799,27 @@ hr.soft {
 .user-page .cart-item-breakdown .line-total {
   color: #f0f5ff;
 }
+
+/* Ensure front_user dark theme fully covers mobile viewport/overscroll area */
+html.user-page-root {
+  background:
+    radial-gradient(1200px 700px at 15% 20%, rgba(126, 35, 118, 0.36), transparent 62%),
+    radial-gradient(900px 600px at 82% 28%, rgba(0, 186, 199, 0.24), transparent 58%),
+    linear-gradient(135deg, #070918 0%, #0a0f2a 45%, #06142a 100%);
+}
+
+body.user-page {
+  min-height: 100dvh;
+  background: transparent;
+}
+
+body.user-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(1200px 700px at 15% 20%, rgba(126, 35, 118, 0.36), transparent 62%),
+    radial-gradient(900px 600px at 82% 28%, rgba(0, 186, 199, 0.24), transparent 58%),
+    linear-gradient(135deg, #070918 0%, #0a0f2a 45%, #06142a 100%);
+}
