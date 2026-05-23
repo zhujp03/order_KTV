@@ -15,6 +15,7 @@ const state = {
   accessCodeRequired: false,
   roomLabelRaw: '',
   categoryObserver: null,
+  categories: [],
 };
 const TAX_RATE = 0.13;
 const SERVICE_RATE = 0.18;
@@ -175,7 +176,7 @@ function normalizeCategory(category) {
   return text || 'Uncategorized';
 }
 
-function buildCategoryGroups(menu) {
+function buildCategoryGroups(menu, categories = []) {
   const map = new Map();
 
   for (const item of menu) {
@@ -186,12 +187,15 @@ function buildCategoryGroups(menu) {
     map.get(category).push(item);
   }
 
-  return [...map.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0], 'en'))
-    .map(([category, items]) => ({
+  const categoryOrder = Array.isArray(categories) ? categories.map((c) => normalizeCategory(c?.name)) : [];
+  const orderedNames = [...new Set([...categoryOrder, ...map.keys()])];
+
+  return orderedNames
+    .filter((category) => map.has(category))
+    .map((category) => ({
       category,
       anchorId: `cat-${encodeURIComponent(category).replace(/%/g, '-')}`,
-      items: [...items].sort((a, b) => a.name.localeCompare(b.name, 'en')),
+      items: map.get(category) || [],
     }));
 }
 
@@ -790,7 +794,8 @@ async function loadContext() {
     state.roomLabelRaw = data.zone?.label || '';
     zoneLabelEl.textContent = toRoomLabel(state.roomLabelRaw);
     state.menu = Array.isArray(data.menu) ? data.menu : [];
-    state.categoryGroups = buildCategoryGroups(state.menu);
+    state.categories = Array.isArray(data.categories) ? data.categories : [];
+    state.categoryGroups = buildCategoryGroups(state.menu, state.categories);
 
     renderCategoryTabs();
     renderMenuSections();

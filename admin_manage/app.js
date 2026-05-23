@@ -12,6 +12,9 @@ const categoryNameInputEl = document.getElementById('categoryNameInput');
 const addCategoryBtnEl = document.getElementById('addCategoryBtn');
 const categoryListEl = document.getElementById('categoryList');
 const categoryMsgEl = document.getElementById('categoryMsg');
+const bulkMenuInputEl = document.getElementById('bulkMenuInput');
+const bulkImportBtnEl = document.getElementById('bulkImportBtn');
+const bulkImportMsgEl = document.getElementById('bulkImportMsg');
 
 const zoneListEl = document.getElementById('zoneList');
 const zoneLabelInputEl = document.getElementById('zoneLabelInput');
@@ -236,6 +239,39 @@ async function saveMenu() {
   }
 }
 
+async function bulkImportMenuText() {
+  const text = bulkMenuInputEl.value.trim();
+  if (!text) {
+    bulkImportMsgEl.textContent = '请先粘贴要导入的文本。';
+    return;
+  }
+
+  bulkImportBtnEl.disabled = true;
+  bulkImportMsgEl.textContent = '导入中...';
+  try {
+    const res = await fetch('/api/admin/menu/import-text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || '批量导入失败');
+    }
+    menuState = Array.isArray(data.menu) ? data.menu : menuState;
+    categoriesState = Array.isArray(data.categories) ? data.categories : categoriesState;
+    renderCategoryList();
+    renderMenuTable();
+    bulkMenuInputEl.value = '';
+    bulkImportMsgEl.textContent = `导入完成：新增 ${Number(data.importedCount || 0)} 个菜品。`;
+    menuMsgEl.textContent = `已保存，共 ${menuState.length} 个菜品。`;
+  } catch (error) {
+    bulkImportMsgEl.textContent = `导入失败：${error.message}`;
+  } finally {
+    bulkImportBtnEl.disabled = false;
+  }
+}
+
 async function loadZones() {
   if (zonesLoading) return;
   zonesLoading = true;
@@ -454,6 +490,7 @@ addCategoryBtnEl.addEventListener('click', async () => {
     alert(`分类创建失败：${error.message}`);
   }
 });
+bulkImportBtnEl.addEventListener('click', bulkImportMenuText);
 
 categoryNameInputEl.addEventListener('keydown', async (event) => {
   if (event.key !== 'Enter') return;

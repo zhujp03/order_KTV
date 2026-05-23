@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS categories (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  sort_index INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -223,6 +224,7 @@ CREATE TABLE IF NOT EXISTS menu (
   price REAL NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT 'Uncategorized',
+  sort_index INTEGER NOT NULL DEFAULT 0,
   available INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -329,6 +331,12 @@ if (!hasColumn('zones', 'access_code')) {
 if (!hasColumn('zones', 'access_code_updated_at')) {
   db.exec('ALTER TABLE zones ADD COLUMN access_code_updated_at TEXT');
 }
+if (!hasColumn('categories', 'sort_index')) {
+  db.exec('ALTER TABLE categories ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0');
+}
+if (!hasColumn('menu', 'sort_index')) {
+  db.exec('ALTER TABLE menu ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0');
+}
 
 function getSetting(key) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -349,17 +357,28 @@ function normalizeCategoryName(value) {
 
 function getAllCategories() {
   return db
-    .prepare('SELECT id, name, created_at FROM categories ORDER BY name COLLATE NOCASE ASC')
+    .prepare('SELECT id, name, sort_index, created_at FROM categories ORDER BY sort_index ASC, datetime(created_at) ASC, name COLLATE NOCASE ASC')
     .all()
     .map((row) => ({
       id: row.id,
       name: row.name,
+      sortIndex: Number(row.sort_index || 0),
       createdAt: row.created_at,
     }));
 }
 
 function getCategoryNameSet() {
   return new Set(getAllCategories().map((category) => category.name));
+}
+
+function nextCategorySortIndex() {
+  const row = db.prepare('SELECT COALESCE(MAX(sort_index), -1) AS max_idx FROM categories').get();
+  return Number(row?.max_idx ?? -1) + 1;
+}
+
+function nextMenuSortIndex() {
+  const row = db.prepare('SELECT COALESCE(MAX(sort_index), -1) AS max_idx FROM menu').get();
+  return Number(row?.max_idx ?? -1) + 1;
 }
 
 function normalizeMenu(inputMenu) {
@@ -379,6 +398,7 @@ function normalizeMenu(inputMenu) {
       price: round2(price),
       description: sanitizeText(raw?.description, 240),
       category: sanitizeText(raw?.category, 40) || 'Uncategorized',
+      sortIndex: Number.isInteger(Number(raw?.sortIndex)) ? Number(raw.sortIndex) : null,
       available: raw?.available !== false,
     });
   }
@@ -589,7 +609,7 @@ const archiveAndClearZoneOrdersTx = db.transaction((zoneId, checkoutAt) => {
 
 function getActiveMenu() {
   return db
-    .prepare('SELECT id, name, price, description, category, available FROM menu WHERE available = 1 ORDER BY category, name')
+    .prepare('SELECT id, name, price, description, category, sort_index, available FROM menu WHERE available = 1 ORDER BY sort_index ASC, datetime(created_at) ASC, name COLLATE NOCASE ASC')
     .all()
     .map((row) => ({
       ...row,
@@ -600,7 +620,7 @@ function getActiveMenu() {
 
 function getAllMenu() {
   return db
-    .prepare('SELECT id, name, price, description, category, available FROM menu ORDER BY category, name')
+    .prepare('SELECT id, name, price, description, category, sort_index, available FROM menu ORDER BY sort_index ASC, datetime(created_at) ASC, name COLLATE NOCASE ASC')
     .all()
     .map((row) => ({
       ...row,
@@ -674,26 +694,29 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
     ORDER BY id ASC
   `);
 
-  return orders.map((order) => ({
-    id: order.id,
-    zoneId: order.zone_id,
-    zoneLabel: order.zone_label,
-    zoneToken: order.zone_token,
-    items: getItemsStmt.all(order.id).map((item) => ({
+  return orders.map((order) => {
+    const items = getItemsStmt.all(order.id).map((item) => ({
       menuId: item.menu_id,
       name: item.name,
       price: round2(item.price),
       quantity: Number(item.quantity),
       subtotal: round2(item.subtotal),
-    })),
+    }));
+    return ({
+    id: order.id,
+    zoneId: order.zone_id,
+    zoneLabel: order.zone_label,
+    zoneToken: order.zone_token,
+    items,
     note: order.note || '',
-    total: calculateOrderGrandTotal(itemsByOrder.get(order.id) || []),
+    total: calculateOrderGrandTotal(items),
     status: order.status,
     createdAt: order.created_at,
     updatedAt: order.updated_at,
     archivedAt: history ? order.archived_at : undefined,
     checkoutAt: history ? order.checkout_at : undefined,
-  }));
+  });
+  });
 }
 
 function resolveBaseUrl(req) {
@@ -730,17 +753,20 @@ function maybeMigrateFromLegacyJson() {
     const legacyMenu = normalizeMenu(legacy.menu);
     const categoryNames = [...new Set(legacyMenu.map((item) => normalizeCategoryName(item.category)).filter(Boolean))];
     const insertCategoryStmt = db.prepare(`
-      INSERT OR IGNORE INTO categories(id, name, created_at)
-      VALUES (?, ?, ?)
+      INSERT OR IGNORE INTO categories(id, name, sort_index, created_at)
+      VALUES (?, ?, ?, ?)
     `);
+    let categorySortIndex = nextCategorySortIndex();
     for (const categoryName of categoryNames) {
-      insertCategoryStmt.run(createId(), categoryName, nowIso());
+      insertCategoryStmt.run(createId(), categoryName, categorySortIndex, nowIso());
+      categorySortIndex += 1;
     }
 
     const insertMenuStmt = db.prepare(`
-      INSERT OR REPLACE INTO menu(id, name, price, description, category, available, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO menu(id, name, price, description, category, sort_index, available, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    let menuSortIndex = nextMenuSortIndex();
     for (const item of legacyMenu) {
       insertMenuStmt.run(
         item.id,
@@ -748,10 +774,12 @@ function maybeMigrateFromLegacyJson() {
         round2(item.price),
         item.description || '',
         item.category || 'Uncategorized',
+        menuSortIndex,
         item.available ? 1 : 0,
         nowIso(),
         nowIso(),
       );
+      menuSortIndex += 1;
     }
 
     const insertZoneStmt = db.prepare(`
@@ -859,30 +887,34 @@ function seedDefaultsIfNeeded() {
 
   if (categoryCount === 0) {
     const insertCategoryStmt = db.prepare(`
-      INSERT INTO categories(id, name, created_at)
-      VALUES (?, ?, ?)
+      INSERT INTO categories(id, name, sort_index, created_at)
+      VALUES (?, ?, ?, ?)
     `);
     const categories = [...new Set(defaultMenu().map((item) => normalizeCategoryName(item.category)).filter(Boolean))];
     const createdAt = nowIso();
-    for (const categoryName of categories) {
-      insertCategoryStmt.run(createId(), categoryName, createdAt);
+    for (let i = 0; i < categories.length; i += 1) {
+      const categoryName = categories[i];
+      insertCategoryStmt.run(createId(), categoryName, i, createdAt);
     }
   }
 
   if (menuCount === 0) {
     const insertMenuStmt = db.prepare(`
-      INSERT INTO menu(id, name, price, description, category, available, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO menu(id, name, price, description, category, sort_index, available, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const now = nowIso();
-    for (const item of defaultMenu()) {
+    const defaults = defaultMenu();
+    for (let i = 0; i < defaults.length; i += 1) {
+      const item = defaults[i];
       insertMenuStmt.run(
         item.id,
         item.name,
         round2(item.price),
         item.description,
         item.category,
+        i,
         item.available ? 1 : 0,
         now,
         now,
@@ -930,12 +962,14 @@ function backfillCategoriesFromMenu() {
 
   const existing = getCategoryNameSet();
   const insertCategoryStmt = db.prepare(`
-    INSERT INTO categories(id, name, created_at)
-    VALUES (?, ?, ?)
+    INSERT INTO categories(id, name, sort_index, created_at)
+    VALUES (?, ?, ?, ?)
   `);
+  let nextIdx = nextCategorySortIndex();
   for (const categoryName of menuCategories) {
     if (existing.has(categoryName)) continue;
-    insertCategoryStmt.run(createId(), categoryName, nowIso());
+    insertCategoryStmt.run(createId(), categoryName, nextIdx, nowIso());
+    nextIdx += 1;
     existing.add(categoryName);
   }
 }
@@ -953,10 +987,21 @@ function backfillZoneAccessCodes() {
   }
 }
 
+function backfillSortIndexes() {
+  const categories = db.prepare('SELECT id FROM categories ORDER BY datetime(created_at) ASC, name COLLATE NOCASE ASC').all();
+  const updateCategorySortStmt = db.prepare('UPDATE categories SET sort_index = ? WHERE id = ?');
+  categories.forEach((row, idx) => updateCategorySortStmt.run(idx, row.id));
+
+  const menuRows = db.prepare('SELECT id FROM menu ORDER BY datetime(created_at) ASC, name COLLATE NOCASE ASC').all();
+  const updateMenuSortStmt = db.prepare('UPDATE menu SET sort_index = ? WHERE id = ?');
+  menuRows.forEach((row, idx) => updateMenuSortStmt.run(idx, row.id));
+}
+
 maybeMigrateFromLegacyJson();
 seedDefaultsIfNeeded();
 backfillCategoriesFromMenu();
 backfillZoneAccessCodes();
+backfillSortIndexes();
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -1114,6 +1159,7 @@ app.get('/api/public/context/:token', (req, res) => {
       token: zone.token,
     },
     menu: getActiveMenu(),
+    categories: getAllCategories(),
     cart,
     session,
   });
@@ -1380,17 +1426,19 @@ app.put('/api/admin/menu', (req, res) => {
     db.prepare('DELETE FROM menu').run();
 
     const insertMenuStmt = db.prepare(`
-      INSERT INTO menu(id, name, price, description, category, available, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO menu(id, name, price, description, category, sort_index, available, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    for (const item of nextMenu) {
+    for (let i = 0; i < nextMenu.length; i += 1) {
+      const item = nextMenu[i];
       insertMenuStmt.run(
         item.id,
         item.name,
         round2(item.price),
         item.description || '',
         item.category || 'Uncategorized',
+        i,
         item.available ? 1 : 0,
         now,
         now,
@@ -1417,14 +1465,98 @@ app.post('/api/admin/categories', (req, res) => {
     return res.status(409).json({ error: `Category already exists: ${name}` });
   }
 
-  const category = { id: createId(), name, createdAt: nowIso() };
-  db.prepare('INSERT INTO categories(id, name, created_at) VALUES (?, ?, ?)').run(
+  const category = { id: createId(), name, sortIndex: nextCategorySortIndex(), createdAt: nowIso() };
+  db.prepare('INSERT INTO categories(id, name, sort_index, created_at) VALUES (?, ?, ?, ?)').run(
     category.id,
     category.name,
+    category.sortIndex,
     category.createdAt,
   );
 
   return res.status(201).json({ ok: true, category, categories: getAllCategories() });
+});
+
+app.post('/api/admin/menu/import-text', (req, res) => {
+  const rawText = sanitizeText(req.body?.text || '', 100000);
+  if (!rawText) {
+    return res.status(400).json({ error: 'Import text cannot be empty.' });
+  }
+
+  const blocks = String(rawText)
+    .split(/\n\s*\n+/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+
+  const parsedItems = [];
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const data = { category: '', name: '', price: NaN, description: '' };
+    for (const line of lines) {
+      const m = line.match(/^([A-Za-z ]+)\s*:\s*(.*)$/);
+      if (!m) continue;
+      const key = m[1].trim().toLowerCase();
+      const value = m[2] ?? '';
+      if (key === 'category') data.category = normalizeCategoryName(value);
+      if (key === 'name') data.name = sanitizeText(value, 80);
+      if (key === 'price') data.price = Number(value);
+      if (key === 'description') data.description = sanitizeText(value, 240);
+    }
+    if (!data.category || !data.name || !Number.isFinite(data.price) || data.price < 0) {
+      continue;
+    }
+    parsedItems.push({
+      category: data.category,
+      name: data.name,
+      price: round2(data.price),
+      description: data.description || '',
+      available: true,
+    });
+  }
+
+  if (!parsedItems.length) {
+    return res.status(400).json({ error: 'No valid items parsed. Use Category/Name/Price/Description format.' });
+  }
+
+  const importTx = db.transaction(() => {
+    const existingCategoryNames = new Set(getAllCategories().map((c) => c.name));
+    let categoryIdx = nextCategorySortIndex();
+    const insertCategoryStmt = db.prepare('INSERT INTO categories(id, name, sort_index, created_at) VALUES (?, ?, ?, ?)');
+    for (const item of parsedItems) {
+      if (existingCategoryNames.has(item.category)) continue;
+      insertCategoryStmt.run(createId(), item.category, categoryIdx, nowIso());
+      existingCategoryNames.add(item.category);
+      categoryIdx += 1;
+    }
+
+    const insertMenuStmt = db.prepare(`
+      INSERT INTO menu(id, name, price, description, category, sort_index, available, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    let menuIdx = nextMenuSortIndex();
+    const now = nowIso();
+    for (const item of parsedItems) {
+      insertMenuStmt.run(
+        createId(),
+        item.name,
+        item.price,
+        item.description,
+        item.category,
+        menuIdx,
+        1,
+        now,
+        now,
+      );
+      menuIdx += 1;
+    }
+  });
+
+  importTx();
+  return res.status(201).json({
+    ok: true,
+    importedCount: parsedItems.length,
+    menu: getAllMenu(),
+    categories: getAllCategories(),
+  });
 });
 
 app.delete('/api/admin/categories/:id', (req, res) => {
