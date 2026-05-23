@@ -36,6 +36,7 @@
           <table class="table" id="menuTable" style="margin-top: 8px">
             <thead>
               <tr>
+                <th style="width: 40px"><input id="menuSelectAll" type="checkbox" /></th>
                 <th>名称</th>
                 <th>价格</th>
                 <th>分类</th>
@@ -46,7 +47,11 @@
             </thead>
             <tbody id="menuTbody"></tbody>
           </table>
-          <div class="text-right" style="margin-top: 10px">
+          <div class="row wrap" style="justify-content: space-between; margin-top: 10px">
+            <div class="row wrap">
+              <button id="deleteSelectedMenuBtn" class="warn">删除勾选</button>
+              <button id="deleteAllMenuBtn" class="warn">全部删除</button>
+            </div>
             <button id="saveMenuBtn">保存菜单</button>
           </div>
           <p id="menuMsg" class="small muted" style="margin-bottom: 0"></p>

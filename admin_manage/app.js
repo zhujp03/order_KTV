@@ -8,6 +8,9 @@ let draggingCategoryId = '';
 const menuTbodyEl = document.getElementById('menuTbody');
 const addMenuBtnEl = document.getElementById('addMenuBtn');
 const saveMenuBtnEl = document.getElementById('saveMenuBtn');
+const menuSelectAllEl = document.getElementById('menuSelectAll');
+const deleteSelectedMenuBtnEl = document.getElementById('deleteSelectedMenuBtn');
+const deleteAllMenuBtnEl = document.getElementById('deleteAllMenuBtn');
 const menuMsgEl = document.getElementById('menuMsg');
 const categoryNameInputEl = document.getElementById('categoryNameInput');
 const addCategoryBtnEl = document.getElementById('addCategoryBtn');
@@ -36,7 +39,8 @@ function escapeHtml(value) {
 
 function renderMenuTable() {
   if (!menuState.length) {
-    menuTbodyEl.innerHTML = '<tr><td colspan="6" class="muted">暂无菜品，先新增一条。</td></tr>';
+    menuTbodyEl.innerHTML = '<tr><td colspan="7" class="muted">暂无菜品，先新增一条。</td></tr>';
+    if (menuSelectAllEl) menuSelectAllEl.checked = false;
     return;
   }
 
@@ -50,6 +54,7 @@ function renderMenuTable() {
     .map(
       (item) => `
       <tr data-id="${item.id}">
+        <td><input type="checkbox" data-menu-select="${item.id}" /></td>
         <td><input data-field="name" value="${escapeHtml(item.name)}" /></td>
         <td><input data-field="price" type="number" min="0" step="0.01" value="${Number(item.price).toFixed(2)}" /></td>
         <td>
@@ -78,6 +83,7 @@ function renderMenuTable() {
       categorySelect.value = item.category || categoriesState[0]?.name || '';
     }
   }
+  if (menuSelectAllEl) menuSelectAllEl.checked = false;
 }
 
 function readMenuFromDom() {
@@ -170,6 +176,33 @@ function renderZones() {
       `,
     )
     .join('');
+}
+
+function getSelectedMenuIds() {
+  return [...menuTbodyEl.querySelectorAll('input[data-menu-select]:checked')].map((el) => el.dataset.menuSelect);
+}
+
+function deleteSelectedMenuRows() {
+  const selectedIds = getSelectedMenuIds();
+  if (!selectedIds.length) {
+    alert('请先勾选要删除的菜品。');
+    return;
+  }
+  const ok = confirm(`确认删除勾选的 ${selectedIds.length} 个菜品吗？`);
+  if (!ok) return;
+  const selectedSet = new Set(selectedIds);
+  menuState = menuState.filter((item) => !selectedSet.has(item.id));
+  renderMenuTable();
+  menuMsgEl.textContent = `已删除 ${selectedIds.length} 个菜品，请点击“保存菜单”生效。`;
+}
+
+function deleteAllMenuRows() {
+  if (!menuState.length) return;
+  const ok = confirm(`确认删除全部 ${menuState.length} 个菜品吗？`);
+  if (!ok) return;
+  menuState = [];
+  renderMenuTable();
+  menuMsgEl.textContent = '已清空全部菜品，请点击“保存菜单”生效。';
 }
 
 async function saveCategoryOrderFromDom() {
@@ -523,6 +556,24 @@ menuTbodyEl.addEventListener('click', (event) => {
   renderMenuTable();
 });
 
+menuSelectAllEl.addEventListener('change', () => {
+  const checked = menuSelectAllEl.checked;
+  for (const box of menuTbodyEl.querySelectorAll('input[data-menu-select]')) {
+    box.checked = checked;
+  }
+});
+
+menuTbodyEl.addEventListener('change', (event) => {
+  const box = event.target.closest('input[data-menu-select]');
+  if (!box) return;
+  const boxes = [...menuTbodyEl.querySelectorAll('input[data-menu-select]')];
+  if (!boxes.length) {
+    menuSelectAllEl.checked = false;
+    return;
+  }
+  menuSelectAllEl.checked = boxes.every((item) => item.checked);
+});
+
 addMenuBtnEl.addEventListener('click', () => {
   if (!categoriesState.length) {
     alert('请先创建分类。');
@@ -541,6 +592,8 @@ addMenuBtnEl.addEventListener('click', () => {
 });
 
 saveMenuBtnEl.addEventListener('click', saveMenu);
+deleteSelectedMenuBtnEl.addEventListener('click', deleteSelectedMenuRows);
+deleteAllMenuBtnEl.addEventListener('click', deleteAllMenuRows);
 
 addCategoryBtnEl.addEventListener('click', async () => {
   try {
