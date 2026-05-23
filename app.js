@@ -988,20 +988,29 @@ function backfillZoneAccessCodes() {
 }
 
 function backfillSortIndexes() {
-  const categories = db.prepare('SELECT id FROM categories ORDER BY datetime(created_at) ASC, name COLLATE NOCASE ASC').all();
-  const updateCategorySortStmt = db.prepare('UPDATE categories SET sort_index = ? WHERE id = ?');
-  categories.forEach((row, idx) => updateCategorySortStmt.run(idx, row.id));
+  // Only initialize sort indexes for legacy rows that are all defaulted to 0.
+  // Never overwrite user-customized ordering.
+  const catStat = db.prepare('SELECT COUNT(*) AS count, COALESCE(MAX(sort_index), 0) AS max_idx FROM categories').get();
+  if (Number(catStat?.count || 0) > 1 && Number(catStat?.max_idx || 0) === 0) {
+    const categories = db.prepare('SELECT id FROM categories ORDER BY datetime(created_at) ASC, name COLLATE NOCASE ASC').all();
+    const updateCategorySortStmt = db.prepare('UPDATE categories SET sort_index = ? WHERE id = ?');
+    categories.forEach((row, idx) => updateCategorySortStmt.run(idx, row.id));
+  }
 
-  const menuRows = db.prepare('SELECT id FROM menu ORDER BY datetime(created_at) ASC, name COLLATE NOCASE ASC').all();
-  const updateMenuSortStmt = db.prepare('UPDATE menu SET sort_index = ? WHERE id = ?');
-  menuRows.forEach((row, idx) => updateMenuSortStmt.run(idx, row.id));
+  const menuStat = db.prepare('SELECT COUNT(*) AS count, COALESCE(MAX(sort_index), 0) AS max_idx FROM menu').get();
+  if (Number(menuStat?.count || 0) > 1 && Number(menuStat?.max_idx || 0) === 0) {
+    const menuRows = db.prepare('SELECT id FROM menu ORDER BY datetime(created_at) ASC, name COLLATE NOCASE ASC').all();
+    const updateMenuSortStmt = db.prepare('UPDATE menu SET sort_index = ? WHERE id = ?');
+    menuRows.forEach((row, idx) => updateMenuSortStmt.run(idx, row.id));
+  }
 }
 
 maybeMigrateFromLegacyJson();
 seedDefaultsIfNeeded();
 backfillCategoriesFromMenu();
 backfillZoneAccessCodes();
-backfillSortIndexes();
+// Do not auto-run backfillSortIndexes on every startup.
+// It can accidentally rewrite manually adjusted ordering in production.
 
 app.use(express.json({ limit: '1mb' }));
 
