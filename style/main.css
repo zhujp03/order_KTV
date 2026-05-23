@@ -425,13 +425,30 @@ hr.soft {
 }
 
 .user-page .category-tabs-wrap {
-  margin-top: 14px;
+  margin-top: 0;
   padding: 10px;
-  position: sticky;
-  top: 8px;
-  z-index: 12;
   background: rgba(255, 252, 247, 0.94);
   backdrop-filter: blur(4px);
+}
+
+.user-page .sticky-menu-head {
+  margin-top: 14px;
+  position: sticky;
+  top: 8px;
+  z-index: 14;
+}
+
+.user-page .welcome-banner {
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(124, 163, 255, 0.34);
+  background: rgba(10, 18, 38, 0.82);
+  color: #9fc2ff;
+  font-family: "Brush Script MT", "Segoe Script", "Snell Roundhand", cursive;
+  font-size: 1.25rem;
+  letter-spacing: 0.02em;
+  text-align: center;
 }
 
 .user-page .category-tabs {
@@ -469,7 +486,7 @@ hr.soft {
 }
 
 .user-page .category-section {
-  scroll-margin-top: 92px;
+  scroll-margin-top: 150px;
   padding: 14px;
 }
 
@@ -670,7 +687,7 @@ hr.soft {
   }
 
   .user-page .category-section {
-    scroll-margin-top: 106px;
+    scroll-margin-top: 164px;
   }
 
   .user-page .cart-drawer {
@@ -822,4 +839,15 @@ body.user-page::before {
     radial-gradient(1200px 700px at 15% 20%, rgba(126, 35, 118, 0.36), transparent 62%),
     radial-gradient(900px 600px at 82% 28%, rgba(0, 186, 199, 0.24), transparent 58%),
     linear-gradient(135deg, #070918 0%, #0a0f2a 45%, #06142a 100%);
+}
+
+body.user-page.access-locked .user-hero,
+body.user-page.access-locked .sticky-menu-head,
+body.user-page.access-locked .menu-sections,
+body.user-page.access-locked .cart-fab {
+  display: none !important;
+}
+
+body.user-page.access-locked .access-gate {
+  margin-top: 0;
 }

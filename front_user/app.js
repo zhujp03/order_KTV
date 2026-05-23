@@ -14,17 +14,20 @@ const state = {
   sessionToken: '',
   accessCodeRequired: false,
   roomLabelRaw: '',
+  categoryObserver: null,
 };
 const TAX_RATE = 0.13;
 const SERVICE_RATE = 0.18;
 
 const zoneLabelEl = document.getElementById('zoneLabel');
+const userHeroEl = document.querySelector('.user-hero');
 const categoryTabsEl = document.getElementById('categoryTabs');
 const menuSectionsEl = document.getElementById('menuSections');
 const accessGateEl = document.getElementById('accessGate');
 const accessCodeInputEl = document.getElementById('accessCodeInput');
 const verifyAccessBtnEl = document.getElementById('verifyAccessBtn');
 const accessMsgEl = document.getElementById('accessMsg');
+const stickyMenuHeadEl = document.getElementById('stickyMenuHead');
 
 const cartFabEl = document.getElementById('cartFab');
 const cartFabCountEl = document.getElementById('cartFabCount');
@@ -110,11 +113,13 @@ function showAccessGate(message = '') {
   if (!state.accessCodeRequired) return;
   accessGateEl.hidden = false;
   accessMsgEl.textContent = message;
+  applyAccessUiState();
 }
 
 function hideAccessGate() {
   accessGateEl.hidden = true;
   accessMsgEl.textContent = '';
+  applyAccessUiState();
 }
 
 function clearSession(message = 'Session expired. Please re-enter access code.') {
@@ -124,6 +129,26 @@ function clearSession(message = 'Session expired. Please re-enter access code.')
   ordersPanelEl.hidden = true;
   ordersListEl.textContent = 'No submitted orders yet.';
   showAccessGate(message);
+  applyAccessUiState();
+}
+
+function updateStickyMenuHeadVisibility() {
+  if (!stickyMenuHeadEl) return;
+  const canShowStickyHead = !state.accessCodeRequired || Boolean(state.sessionToken);
+  stickyMenuHeadEl.hidden = !canShowStickyHead;
+}
+
+function applyAccessUiState() {
+  const locked = state.accessCodeRequired && !state.sessionToken;
+  document.body.classList.toggle('access-locked', locked);
+  if (userHeroEl) userHeroEl.hidden = locked;
+  if (menuSectionsEl) menuSectionsEl.hidden = locked;
+  if (cartFabEl) cartFabEl.hidden = locked;
+  if (locked) {
+    closeCartDrawer();
+    cartOverlayEl.hidden = true;
+  }
+  updateStickyMenuHeadVisibility();
 }
 
 async function apiFetchJson(url, options = {}) {
@@ -585,19 +610,62 @@ function updateActiveCategoryFromScroll() {
   const sections = [...document.querySelectorAll('[data-category-section]')];
   if (!sections.length) return;
 
-  const threshold = 140;
+  const anchorLine = 120;
   let active = sections[0];
+  let minDistance = Number.POSITIVE_INFINITY;
 
   for (const section of sections) {
     const rect = section.getBoundingClientRect();
-    if (rect.top <= threshold) {
+    const distance = Math.abs(rect.top - anchorLine);
+    if (distance < minDistance) {
+      minDistance = distance;
       active = section;
-    } else {
-      break;
     }
   }
 
   setActiveCategory(active.dataset.categorySection || '');
+}
+
+function bindCategoryScrollSync() {
+  if (state.categoryObserver) {
+    state.categoryObserver.disconnect();
+    state.categoryObserver = null;
+  }
+
+  const sections = [...document.querySelectorAll('[data-category-section]')];
+  if (!sections.length) return;
+
+  const visibilityMap = new Map();
+  state.categoryObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const category = entry.target.dataset.categorySection;
+        if (!category) continue;
+        visibilityMap.set(category, entry.isIntersecting ? entry.intersectionRatio : 0);
+      }
+
+      let bestCategory = '';
+      let bestRatio = -1;
+      for (const [category, ratio] of visibilityMap.entries()) {
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          bestCategory = category;
+        }
+      }
+      if (bestCategory) {
+        setActiveCategory(bestCategory);
+      } else {
+        updateActiveCategoryFromScroll();
+      }
+    },
+    {
+      root: null,
+      rootMargin: '-90px 0px -40% 0px',
+      threshold: [0, 0.1, 0.25, 0.4, 0.6, 0.8, 1],
+    },
+  );
+
+  sections.forEach((section) => state.categoryObserver.observe(section));
 }
 
 function bindMenuActions() {
@@ -726,11 +794,13 @@ async function loadContext() {
 
     renderCategoryTabs();
     renderMenuSections();
+    bindCategoryScrollSync();
     renderMenuQtyOnly();
     renderCartSummary();
     updateActiveCategoryFromScroll();
 
     applyServerCart(data.cart || { items: {}, note: '' }, { syncNote: true });
+    applyAccessUiState();
 
     if (state.accessCodeRequired && !state.sessionToken) {
       showAccessGate('Enter access code to start cart sync and ordering.');
@@ -746,6 +816,7 @@ async function loadContext() {
         }
       }
     }
+    applyAccessUiState();
     setInterval(async () => {
       await pollCartLoop();
       await pollOrdersLoop();
