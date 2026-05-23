@@ -34,12 +34,14 @@ function currency(value) {
 }
 
 function renderOrders(orders) {
-  if (!orders.length) {
+  const visibleOrders = (orders || []).filter((order) => order.status !== 'served');
+
+  if (!visibleOrders.length) {
     ordersWrapEl.innerHTML = '<div class="card muted">当前没有订单。</div>';
     return;
   }
 
-  ordersWrapEl.innerHTML = orders
+  ordersWrapEl.innerHTML = visibleOrders
     .map((order) => {
       const items = order.items
         .map((item) => `<li>${item.name} x ${item.quantity} <span class="muted">(${currency(item.subtotal)})</span></li>`)

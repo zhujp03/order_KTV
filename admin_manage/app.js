@@ -3,6 +3,7 @@ let zonesState = [];
 let categoriesState = [];
 let zonesRefreshTimer = null;
 let zonesLoading = false;
+let draggingCategoryId = '';
 
 const menuTbodyEl = document.getElementById('menuTbody');
 const addMenuBtnEl = document.getElementById('addMenuBtn');
@@ -99,16 +100,35 @@ function renderCategoryList() {
     return;
   }
 
-  categoryListEl.innerHTML = categoriesState
-    .map(
-      (category) => `
-      <span class="badge" style="display:flex;gap:8px;align-items:center;">
-        ${escapeHtml(category.name)}
-        <button class="warn small" data-action="delete-category" data-id="${category.id}" style="padding:2px 8px;">删除</button>
-      </span>
-    `,
-    )
-    .join('');
+  categoryListEl.innerHTML = `
+    <table class="table" style="margin-top: 4px">
+      <thead>
+        <tr>
+          <th style="width:34px">排序</th>
+          <th>分类名</th>
+          <th style="width: 170px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${categoriesState
+          .map(
+            (category) => `
+            <tr data-category-row="${category.id}">
+              <td style="width:34px;color:#888;cursor:grab;" title="拖拽排序" draggable="true" data-drag-handle="category">☰</td>
+              <td><input data-category-field="name" value="${escapeHtml(category.name)}" /></td>
+              <td>
+                <div class="row wrap">
+                  <button class="secondary small" data-action="rename-category" data-id="${category.id}" style="padding:6px 10px;">保存</button>
+                  <button class="warn small" data-action="delete-category" data-id="${category.id}" style="padding:6px 10px;">删除</button>
+                </div>
+              </td>
+            </tr>
+          `,
+          )
+          .join('')}
+      </tbody>
+    </table>
+  `;
   categoryMsgEl.textContent = `已创建 ${categoriesState.length} 个分类。`;
 }
 
@@ -150,6 +170,23 @@ function renderZones() {
       `,
     )
     .join('');
+}
+
+async function saveCategoryOrderFromDom() {
+  const ids = [...categoryListEl.querySelectorAll('tr[data-category-row]')].map((row) => row.dataset.categoryRow);
+  if (!ids.length) return;
+  const res = await fetch('/api/admin/categories/reorder', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || '分类排序保存失败');
+  }
+  categoriesState = Array.isArray(data.categories) ? data.categories : categoriesState;
+  renderCategoryList();
+  renderMenuTable();
 }
 
 async function loadMenu() {
@@ -207,6 +244,28 @@ async function deleteCategory(categoryId) {
     throw new Error(data.error || '删除分类失败');
   }
   categoriesState = Array.isArray(data.categories) ? data.categories : categoriesState;
+  renderCategoryList();
+  renderMenuTable();
+}
+
+async function renameCategory(categoryId, nextName) {
+  const name = String(nextName || '').trim();
+  if (!name) {
+    throw new Error('分类名称不能为空。');
+  }
+  const res = await fetch(`/api/admin/categories/${encodeURIComponent(categoryId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || '分类改名失败');
+  }
+  categoriesState = Array.isArray(data.categories) ? data.categories : categoriesState;
+  if (Array.isArray(data.menu)) {
+    menuState = data.menu;
+  }
   renderCategoryList();
   renderMenuTable();
 }
@@ -503,12 +562,73 @@ categoryNameInputEl.addEventListener('keydown', async (event) => {
 });
 
 categoryListEl.addEventListener('click', async (event) => {
-  const button = event.target.closest('button[data-action="delete-category"]');
+  const button = event.target.closest('button[data-action]');
   if (!button) return;
   try {
-    await deleteCategory(button.dataset.id);
+    const action = button.dataset.action;
+    const categoryId = button.dataset.id;
+    if (action === 'delete-category') {
+      await deleteCategory(categoryId);
+      return;
+    }
+    if (action === 'rename-category') {
+      const row = button.closest('tr[data-category-row]');
+      const input = row?.querySelector('input[data-category-field="name"]');
+      await renameCategory(categoryId, input?.value || '');
+    }
   } catch (error) {
-    alert(`删除分类失败：${error.message}`);
+    alert(`分类操作失败：${error.message}`);
+  }
+});
+
+categoryListEl.addEventListener('dragstart', (event) => {
+  const handle = event.target.closest('[data-drag-handle="category"]');
+  if (!handle) return;
+  const row = handle.closest('tr[data-category-row]');
+  if (!row) return;
+  draggingCategoryId = row.dataset.categoryRow || '';
+  row.style.opacity = '0.5';
+  event.dataTransfer.effectAllowed = 'move';
+});
+
+categoryListEl.addEventListener('dragend', (event) => {
+  const row = event.target && typeof event.target.closest === 'function'
+    ? event.target.closest('tr[data-category-row]')
+    : null;
+  if (row) row.style.opacity = '';
+});
+
+categoryListEl.addEventListener('dragover', (event) => {
+  const targetRow = event.target.closest('tr[data-category-row]');
+  if (!targetRow || !draggingCategoryId) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+});
+
+categoryListEl.addEventListener('drop', async (event) => {
+  const targetRow = event.target.closest('tr[data-category-row]');
+  if (!targetRow || !draggingCategoryId) return;
+  event.preventDefault();
+
+  const draggingRow = categoryListEl.querySelector(`tr[data-category-row="${draggingCategoryId}"]`);
+  if (!draggingRow || draggingRow === targetRow) return;
+
+  const rect = targetRow.getBoundingClientRect();
+  const placeAfter = event.clientY > rect.top + rect.height / 2;
+  if (placeAfter) {
+    targetRow.parentNode.insertBefore(draggingRow, targetRow.nextSibling);
+  } else {
+    targetRow.parentNode.insertBefore(draggingRow, targetRow);
+  }
+
+  draggingCategoryId = '';
+  try {
+    await saveCategoryOrderFromDom();
+    categoryMsgEl.textContent = `分类顺序已更新。`;
+  } catch (error) {
+    alert(`保存排序失败：${error.message}`);
+    await loadCategories();
+    renderMenuTable();
   }
 });
 

@@ -1476,6 +1476,69 @@ app.post('/api/admin/categories', (req, res) => {
   return res.status(201).json({ ok: true, category, categories: getAllCategories() });
 });
 
+app.patch('/api/admin/categories/:id', (req, res) => {
+  const categoryId = sanitizeText(req.params.id, 100);
+  const name = normalizeCategoryName(req.body?.name);
+  if (!name) {
+    return res.status(400).json({ error: 'Category name cannot be empty.' });
+  }
+
+  const category = db.prepare('SELECT id, name FROM categories WHERE id = ?').get(categoryId);
+  if (!category) {
+    return res.status(404).json({ error: 'Category not found.' });
+  }
+  if (category.name === name) {
+    return res.json({ ok: true, category: { id: category.id, name }, categories: getAllCategories() });
+  }
+
+  const duplicate = db.prepare('SELECT id FROM categories WHERE name = ? AND id != ?').get(name, categoryId);
+  if (duplicate) {
+    return res.status(409).json({ error: `Category already exists: ${name}` });
+  }
+
+  const renameTx = db.transaction(() => {
+    db.prepare('UPDATE categories SET name = ? WHERE id = ?').run(name, categoryId);
+    db.prepare('UPDATE menu SET category = ?, updated_at = ? WHERE category = ?').run(name, nowIso(), category.name);
+  });
+  renameTx();
+
+  return res.json({
+    ok: true,
+    category: { id: categoryId, name },
+    categories: getAllCategories(),
+    menu: getAllMenu(),
+  });
+});
+
+app.patch('/api/admin/categories/reorder', (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((id) => sanitizeText(id, 100)).filter(Boolean) : [];
+  if (!ids.length) {
+    return res.status(400).json({ error: 'ids is required.' });
+  }
+
+  const existing = getAllCategories();
+  const existingIds = new Set(existing.map((c) => c.id));
+  if (ids.length !== existing.length) {
+    return res.status(400).json({ error: 'ids length does not match category count.' });
+  }
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ error: 'ids contains duplicates.' });
+  }
+  for (const id of ids) {
+    if (!existingIds.has(id)) {
+      return res.status(400).json({ error: `Invalid category id: ${id}` });
+    }
+  }
+
+  const reorderTx = db.transaction(() => {
+    const updateStmt = db.prepare('UPDATE categories SET sort_index = ? WHERE id = ?');
+    ids.forEach((id, idx) => updateStmt.run(idx, id));
+  });
+  reorderTx();
+
+  return res.json({ ok: true, categories: getAllCategories() });
+});
+
 app.post('/api/admin/menu/import-text', (req, res) => {
   const rawText = sanitizeText(req.body?.text || '', 100000);
   if (!rawText) {
