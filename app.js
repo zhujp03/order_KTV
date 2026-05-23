@@ -107,6 +107,28 @@ function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function ceil2(value) {
+  return Math.ceil((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+const TAX_RATE = 0.13;
+const SERVICE_RATE = 0.18;
+
+function calculateOrderGrandTotal(items = []) {
+  let subtotalAll = 0;
+  let serviceAll = 0;
+  let taxAll = 0;
+  for (const item of items) {
+    const subtotal = round2(Number(item?.subtotal) || 0);
+    const service = round2(subtotal * SERVICE_RATE);
+    const tax = ceil2((subtotal + service) * TAX_RATE);
+    subtotalAll += subtotal;
+    serviceAll += service;
+    taxAll += tax;
+  }
+  return round2(round2(subtotalAll) + round2(serviceAll) + round2(taxAll));
+}
+
 function safeJsonParse(text, fallback) {
   try {
     return JSON.parse(text);
@@ -599,17 +621,23 @@ function getZoneList(baseUrl) {
         z.completed,
         z.completed_at,
         z.created_at,
-        COALESCE(stats.active_order_count, 0) AS active_order_count,
-        COALESCE(stats.active_order_total, 0) AS active_order_total
+        COALESCE(stats.active_order_count, 0) AS active_order_count
       FROM zones z
       LEFT JOIN (
-        SELECT zone_id, COUNT(*) AS active_order_count, SUM(total) AS active_order_total
+        SELECT zone_id, COUNT(*) AS active_order_count
         FROM orders
         GROUP BY zone_id
       ) stats ON stats.zone_id = z.id
       ORDER BY z.created_at ASC
     `)
     .all();
+
+  const activeOrders = getOrderWithItems();
+  const zoneTotalMap = new Map();
+  for (const order of activeOrders) {
+    const total = calculateOrderGrandTotal(order.items || []);
+    zoneTotalMap.set(order.zoneId, round2((zoneTotalMap.get(order.zoneId) || 0) + total));
+  }
 
   return zones.map((zone) => ({
     id: zone.id,
@@ -621,7 +649,7 @@ function getZoneList(baseUrl) {
     completedAt: zone.completed_at || null,
     createdAt: zone.created_at,
     activeOrderCount: Number(zone.active_order_count || 0),
-    activeOrderTotal: round2(zone.active_order_total || 0),
+    activeOrderTotal: round2(zoneTotalMap.get(zone.id) || 0),
     accessUrl: `${baseUrl}/o/${zone.token}`,
     qrPngUrl: `${baseUrl}/api/admin/zones/${zone.id}/qrcode?format=png`,
     qrSvgUrl: `${baseUrl}/api/admin/zones/${zone.id}/qrcode?format=svg`,
@@ -659,7 +687,7 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
       subtotal: round2(item.subtotal),
     })),
     note: order.note || '',
-    total: round2(order.total),
+    total: calculateOrderGrandTotal(itemsByOrder.get(order.id) || []),
     status: order.status,
     createdAt: order.created_at,
     updatedAt: order.updated_at,
@@ -1229,7 +1257,7 @@ app.post('/api/public/orders', (req, res) => {
     return res.status(400).json({ error: 'Please choose at least one valid item.' });
   }
 
-  const total = round2(normalizedItems.reduce((sum, item) => sum + item.subtotal, 0));
+  const total = calculateOrderGrandTotal(normalizedItems);
   const orderId = createId();
   const finalNote = incomingNote || zoneCart.note || '';
   const createdAt = nowIso();

@@ -45,6 +45,21 @@
           <div id="ordersWrap" class="grid admin-orders-grid" style="margin-top: 8px"></div>
         </article>
       </section>
+
+      <div id="zoneSessionDrawerBackdrop" class="admin-drawer-backdrop" hidden></div>
+      <aside id="zoneSessionDrawer" class="admin-drawer" aria-hidden="true">
+        <div class="admin-drawer-head">
+          <div>
+            <h3 id="zoneSessionTitle">包厢订单</h3>
+            <div id="zoneSessionMeta" class="small muted"></div>
+          </div>
+          <button class="light" id="zoneSessionCloseBtn" aria-label="关闭">✕</button>
+        </div>
+        <div id="zoneSessionOrdersWrap" class="admin-drawer-body"></div>
+        <div class="admin-drawer-footer">
+          <button class="warn" id="zoneSessionCheckoutBtn">结单清零</button>
+        </div>
+      </aside>
     </main>
 
     <script src="/front_admin/app.js"></script>
