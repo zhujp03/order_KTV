@@ -1550,7 +1550,7 @@ app.post('/api/admin/zones/:id/checkout', (req, res) => {
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
   clearZoneCart(zoneId);
-  setZoneCompleted(zoneId, true);
+  setZoneCompleted(zoneId, false);
   revokeZoneSessions(zoneId);
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
     rotateZoneAccessCode(zoneId);

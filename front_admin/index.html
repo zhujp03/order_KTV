@@ -33,13 +33,18 @@
         </div>
       </section>
 
-      <section class="card" style="margin-top: 16px">
-        <h2>桌号 / 包厢待办</h2>
-        <p class="small muted">可标记“已完成（灰线划掉）”，也可直接“结单清零”。</p>
-        <div id="zoneTodoWrap" class="grid" style="margin-top: 8px"></div>
-      </section>
+      <section class="admin-board" style="margin-top: 16px">
+        <article class="card">
+          <h2>桌号 / 包厢待办</h2>
+          <p class="small muted">显示当前包厢状态与访问码，可直接“结单清零”。</p>
+          <div id="zoneTodoWrap" class="grid" style="margin-top: 8px"></div>
+        </article>
 
-      <section id="ordersWrap" class="grid cols-3" style="margin-top: 16px"></section>
+        <article class="card">
+          <h2>来单信息</h2>
+          <div id="ordersWrap" class="grid admin-orders-grid" style="margin-top: 8px"></div>
+        </article>
+      </section>
     </main>
 
     <script src="/front_admin/app.js"></script>

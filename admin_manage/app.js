@@ -1,6 +1,8 @@
 let menuState = [];
 let zonesState = [];
 let categoriesState = [];
+let zonesRefreshTimer = null;
+let zonesLoading = false;
 
 const menuTbodyEl = document.getElementById('menuTbody');
 const addMenuBtnEl = document.getElementById('addMenuBtn');
@@ -235,13 +237,19 @@ async function saveMenu() {
 }
 
 async function loadZones() {
+  if (zonesLoading) return;
+  zonesLoading = true;
   const res = await fetch('/api/admin/zones');
   const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '二维码加载失败');
+  try {
+    if (!res.ok) {
+      throw new Error(data.error || '二维码加载失败');
+    }
+    zonesState = Array.isArray(data.zones) ? data.zones : [];
+    renderZones();
+  } finally {
+    zonesLoading = false;
   }
-  zonesState = Array.isArray(data.zones) ? data.zones : [];
-  renderZones();
 }
 
 async function addZoneByLabel(label) {
@@ -540,6 +548,13 @@ zoneListEl.addEventListener('click', async (event) => {
     await loadCategories();
     await loadMenu();
     await loadZones();
+    if (!zonesRefreshTimer) {
+      zonesRefreshTimer = setInterval(() => {
+        loadZones().catch(() => {
+          // 静默失败，避免后台页面频闪
+        });
+      }, 3000);
+    }
   } catch (error) {
     menuMsgEl.textContent = `初始化失败：${error.message}`;
   }

@@ -64,26 +64,15 @@ function renderZones(zones) {
 
   zoneTodoWrapEl.innerHTML = zones
     .map((zone) => {
-      const titleClass = zone.completed ? 'zone-title completed' : 'zone-title';
-      const doneNote = zone.completed && zone.completedAt
-        ? `<div class="zone-done-note">完成时间：${formatTime(zone.completedAt)}</div>`
-        : '';
-
       return `
       <div class="order-card">
         <div class="order-head">
-          <strong class="${titleClass}">${zone.label}</strong>
+          <strong class="zone-title">${zone.label}</strong>
           <span class="badge">${zone.activeOrderCount} 单</span>
         </div>
+        <div class="zone-meta">访问码：${zone.accessCode || '----'}</div>
         <div class="zone-meta">当前未结金额：${currency(zone.activeOrderTotal || 0)}</div>
-        ${doneNote}
         <div class="row wrap" style="margin-top: 8px">
-          <button
-            class="light"
-            data-zone-action="toggle-complete"
-            data-id="${zone.id}"
-            data-completed="${zone.completed ? 'true' : 'false'}"
-          >${zone.completed ? '取消完成' : '标记完成'}</button>
           <button class="warn" data-zone-action="checkout" data-id="${zone.id}">结单清零</button>
         </div>
       </div>`;
@@ -181,13 +170,6 @@ zoneTodoWrapEl.addEventListener('click', async (event) => {
   const zoneId = button.dataset.id;
 
   try {
-    if (action === 'toggle-complete') {
-      const current = button.dataset.completed === 'true';
-      await updateZoneCompleted(zoneId, !current);
-      await loadAll();
-      return;
-    }
-
     if (action === 'checkout') {
       const ok = confirm('结单后该桌/包厢的订单会自动删除清零，确认吗？');
       if (!ok) return;
