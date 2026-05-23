@@ -6,6 +6,7 @@ const state = {
   cartNote: '',
   lastCartDigest: '',
   cartSummaryDigest: '',
+  ordersDigest: '',
   noteEditing: false,
   noteSyncTimer: null,
   polling: false,
@@ -57,6 +58,10 @@ function money(value) {
 
 function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function ceil2(value) {
+  return Math.ceil((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
 function formatTime(iso) {
@@ -270,7 +275,7 @@ function renderCartSummary() {
 
     const subtotal = round2(item.price * qty);
     const service = round2(subtotal * SERVICE_RATE);
-    const tax = round2((subtotal + service) * TAX_RATE);
+    const tax = ceil2((subtotal + service) * TAX_RATE);
     const total = round2(subtotal + tax + service);
 
     subtotalAll += subtotal;
@@ -374,6 +379,23 @@ async function fetchSubmittedOrders() {
 }
 
 function renderSubmittedOrders(orders) {
+  const digest = JSON.stringify(
+    (orders || []).map((order) => ({
+      id: order.id,
+      status: order.status,
+      updatedAt: order.updatedAt,
+      total: order.total,
+      note: order.note,
+      items: (order.items || []).map((item) => ({
+        menuId: item.menuId,
+        quantity: item.quantity,
+        subtotal: item.subtotal,
+      })),
+    })),
+  );
+  if (digest === state.ordersDigest) return;
+  state.ordersDigest = digest;
+
   if (!orders.length) {
     ordersListEl.textContent = 'No submitted orders yet.';
     return;
@@ -665,6 +687,19 @@ async function pollCartLoop() {
   }
 }
 
+async function pollOrdersLoop() {
+  if (!state.token || ordersPanelEl.hidden) return;
+  if (state.accessCodeRequired && !state.sessionToken) return;
+  try {
+    const submittedOrders = await fetchSubmittedOrders();
+    renderSubmittedOrders(submittedOrders);
+  } catch (error) {
+    if (error.requiresAccessCode) {
+      clearSession('Session expired. Please verify access code again.');
+    }
+  }
+}
+
 async function loadContext() {
   state.token = getToken();
   if (!state.token) {
@@ -708,7 +743,10 @@ async function loadContext() {
         }
       }
     }
-    setInterval(pollCartLoop, 1000);
+    setInterval(async () => {
+      await pollCartLoop();
+      await pollOrdersLoop();
+    }, 1000);
   } catch (error) {
     zoneLabelEl.textContent = error.message || 'Please try a valid QR link.';
   }
