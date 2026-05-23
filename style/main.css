@@ -623,3 +623,117 @@ hr.soft {
     transform: translateY(0);
   }
 }
+
+/* KTV-brand theme override for front_user */
+.user-page {
+  color: #dce7ff;
+  background:
+    radial-gradient(1200px 700px at 15% 20%, rgba(126, 35, 118, 0.36), transparent 62%),
+    radial-gradient(900px 600px at 82% 28%, rgba(0, 186, 199, 0.24), transparent 58%),
+    linear-gradient(135deg, #070918 0%, #0a0f2a 45%, #06142a 100%);
+}
+
+.user-page .user-hero {
+  background: linear-gradient(120deg, rgba(11, 20, 43, 0.92), rgba(10, 74, 106, 0.78));
+  border: 1px solid rgba(117, 158, 255, 0.28);
+  box-shadow: 0 16px 42px rgba(3, 8, 24, 0.55);
+}
+
+.user-page .user-hero p {
+  margin: 0;
+  font-size: 1.6rem;
+  letter-spacing: 0.02em;
+  font-weight: 700;
+  color: #8eb8ff;
+}
+
+.user-page .card,
+.user-page .menu-item,
+.user-page .category-tabs-wrap,
+.user-page .category-section,
+.user-page .cart-item-row {
+  background: rgba(12, 19, 42, 0.7);
+  border-color: rgba(124, 163, 255, 0.24);
+  color: #dce7ff;
+  box-shadow: 0 14px 34px rgba(2, 8, 24, 0.45);
+}
+
+.user-page .muted {
+  color: #93a8d8;
+}
+
+.user-page .category-tabs-wrap {
+  background: rgba(10, 18, 38, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.user-page .cat-tab {
+  background: rgba(9, 21, 49, 0.7);
+  border-color: rgba(124, 163, 255, 0.34);
+  color: #d3e1ff;
+}
+
+.user-page .cat-tab.active {
+  background: linear-gradient(135deg, #4a7fff, #63a2ff);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(74, 127, 255, 0.45);
+}
+
+.user-page .price {
+  color: #80b3ff;
+}
+
+.user-page input,
+.user-page textarea,
+.user-page select {
+  background: rgba(9, 16, 36, 0.72);
+  border-color: rgba(122, 162, 255, 0.34);
+  color: #deebff;
+}
+
+.user-page input::placeholder,
+.user-page textarea::placeholder {
+  color: #88a1d6;
+}
+
+.user-page button {
+  background: linear-gradient(135deg, #4a7fff, #63a2ff);
+  color: #fff;
+}
+
+.user-page button.light {
+  background: rgba(11, 21, 46, 0.72);
+  border-color: rgba(124, 163, 255, 0.34);
+  color: #dbe7ff;
+}
+
+.user-page button.secondary {
+  background: linear-gradient(135deg, #2f6bd8, #4d8bff);
+}
+
+.user-page .cart-fab {
+  background: linear-gradient(135deg, #4a7fff, #63a2ff);
+  box-shadow: 0 16px 32px rgba(73, 126, 255, 0.4);
+}
+
+.user-page .cart-fab-count {
+  background: #ffe08a;
+  color: #121622;
+}
+
+.user-page .cart-drawer {
+  background: rgba(8, 14, 31, 0.95);
+  border-color: rgba(124, 163, 255, 0.3);
+  color: #dce7ff;
+}
+
+.user-page .checkout-breakdown-row,
+.user-page .cart-item-breakdown > div {
+  color: #c2d5ff;
+}
+
+.user-page .checkout-breakdown-row.total,
+.user-page .cart-item-breakdown .line-total {
+  color: #f0f5ff;
+}
