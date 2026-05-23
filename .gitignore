@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Environment secrets
+.env
+.env.local
+.env.aws
+.env.*
+!.env.example
+!.env.local.example
+!.env.aws.example
+
+# OS / editor
+.DS_Store
+
+# Runtime database files (SQLite)
+database/*.sqlite3
+database/*.sqlite3-shm
+database/*.sqlite3-wal
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage / build artifacts
+coverage/
+dist/
+.tmp/
+tmp/

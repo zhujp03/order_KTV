@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin 接单</title>
+    <link rel="stylesheet" href="/style/main.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <h1>Admin 接单看板</h1>
+        <p>按照桌号/包厢实时接收订单，支持状态流转（新单 -> 制作中 -> 待上桌 -> 已完成）。</p>
+      </section>
+
+      <section class="card" style="margin-top: 18px">
+        <div class="row wrap" style="justify-content: space-between">
+          <div class="row wrap">
+            <label for="statusFilter" class="small muted">状态筛选</label>
+            <select id="statusFilter" style="width: 170px">
+              <option value="">全部</option>
+              <option value="new">新单</option>
+              <option value="preparing">制作中</option>
+              <option value="ready">待上桌</option>
+              <option value="served">已完成</option>
+              <option value="cancelled">已取消</option>
+            </select>
+          </div>
+          <div class="row wrap">
+            <button class="light" id="refreshBtn">立即刷新</button>
+            <span id="lastUpdated" class="small muted">未刷新</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 16px">
+        <h2>桌号 / 包厢待办</h2>
+        <p class="small muted">可标记“已完成（灰线划掉）”，也可直接“结单清零”。</p>
+        <div id="zoneTodoWrap" class="grid" style="margin-top: 8px"></div>
+      </section>
+
+      <section id="ordersWrap" class="grid cols-3" style="margin-top: 16px"></section>
+    </main>
+
+    <script src="/front_admin/app.js"></script>
+  </body>
+</html>

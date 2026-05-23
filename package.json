@@ -1,0 +1,17 @@
+{
+  "name": "order_system",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "debug": "DEBUG_REQUESTS=1 node app.js",
+    "test": "echo \"No tests configured yet\""
+  },
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "express": "^5.2.1",
+    "qrcode": "^1.5.4"
+  }
+}

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Order Menu</title>
+    <link rel="stylesheet" href="/style/main.css" />
+  </head>
+  <body class="user-page">
+    <main class="app-shell user-shell">
+      <section class="hero user-hero">
+        <h1 id="venueName">Loading Menu</h1>
+        <p id="zoneLabel">Identifying your table...</p>
+      </section>
+
+      <section id="accessGate" class="card access-gate" hidden>
+        <h2>Verify In-Store Access</h2>
+        <p class="muted small">Enter the table/room access code provided in store to enable cart and ordering.</p>
+        <div class="row wrap" style="margin-top: 8px">
+          <input id="accessCodeInput" type="text" inputmode="numeric" placeholder="Access code" maxlength="8" />
+          <button id="verifyAccessBtn" type="button" class="secondary">Verify</button>
+        </div>
+        <p id="accessMsg" class="small muted" style="margin-bottom: 0"></p>
+      </section>
+
+      <nav class="category-tabs-wrap card" aria-label="Menu categories">
+        <div id="categoryTabs" class="category-tabs"></div>
+      </nav>
+
+      <section id="menuSections" class="menu-sections"></section>
+    </main>
+
+    <button id="cartFab" class="cart-fab" type="button" aria-label="Open cart">
+      <span class="cart-fab-label">Cart</span>
+      <span id="cartFabCount" class="cart-fab-count">0</span>
+      <span id="cartFabTotal" class="cart-fab-total">$0.00</span>
+    </button>
+
+    <div id="cartOverlay" class="cart-overlay" hidden></div>
+
+    <aside id="cartDrawer" class="cart-drawer" aria-hidden="true">
+      <div class="cart-drawer-head">
+        <h2>Shared Cart</h2>
+        <button id="cartCloseBtn" class="light" type="button">Close</button>
+      </div>
+
+      <div id="cartList" class="small muted">Your cart is empty.</div>
+
+      <hr class="soft" />
+      <label for="noteInput" class="small">Order note</label>
+      <textarea id="noteInput" placeholder="For example: less ice, no cilantro"></textarea>
+
+      <div class="row cart-drawer-footer">
+        <div class="checkout-breakdown" id="checkoutBreakdown">
+          <div class="checkout-breakdown-row"><span>Subtotal</span><strong id="sumSubtotal">$0.00</strong></div>
+          <div class="checkout-breakdown-row"><span>Tax (HST 13%)</span><strong id="sumTax">$0.00</strong></div>
+          <div class="checkout-breakdown-row"><span>Service charge (18%)</span><strong id="sumService">$0.00</strong></div>
+          <div class="checkout-breakdown-row total"><span>Total</span><strong id="sumTotal">$0.00</strong></div>
+        </div>
+        <button id="submitBtn" type="button">Place Order</button>
+      </div>
+
+      <p id="submitMsg" class="small muted" style="margin-bottom: 0"></p>
+    </aside>
+
+    <script src="/front_user/app.js"></script>
+  </body>
+</html>

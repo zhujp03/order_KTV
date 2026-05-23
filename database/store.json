@@ -1,0 +1,95 @@
+{
+  "settings": {
+    "venueName": "Universal 点餐系统",
+    "privacyMode": true
+  },
+  "menu": [
+    {
+      "id": "aed8320f-1dd1-4633-a5f9-273aaf6e15f3",
+      "name": "Sex on the beach",
+      "price": 16,
+      "description": "",
+      "category": "Cocktail",
+      "available": true
+    },
+    {
+      "id": "1779427968094-b22110",
+      "name": "Rum & Coke",
+      "price": 10,
+      "description": "",
+      "category": "Cocktail",
+      "available": true
+    }
+  ],
+  "zones": [
+    {
+      "id": "67a53210-9334-4940-90be-a37a4c82919a",
+      "label": "1包",
+      "token": "12f837a9d7d3db064d20cc3e",
+      "createdAt": "2026-05-22T05:31:30.013Z",
+      "completed": true,
+      "completedAt": "2026-05-22T05:46:09.175Z"
+    },
+    {
+      "id": "7e55b3ec-c534-4830-8b46-092919d65e09",
+      "label": "2包",
+      "token": "7cc4ced4fcc47aaf571dc666",
+      "createdAt": "2026-05-22T05:31:30.018Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "4dfa3177-e694-43db-b29a-65d3012ff679",
+      "label": "3包",
+      "token": "df093ac16c92fa773a5101be",
+      "createdAt": "2026-05-22T05:31:30.023Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "9ebd5457-3720-4f8c-8ace-374bb02b4a7f",
+      "label": "4包",
+      "token": "a35632163b67d8b172539b70",
+      "createdAt": "2026-05-22T05:31:30.029Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "7b69601f-522f-4a70-a08b-1f84a948c326",
+      "label": "5包",
+      "token": "9f4a0d21e8da485e19683882",
+      "createdAt": "2026-05-22T05:31:30.034Z",
+      "completed": false,
+      "completedAt": null
+    }
+  ],
+  "orders": [
+    {
+      "id": "32198ae4-a795-4069-a076-28f63eb81368",
+      "zoneId": "f6716761-a656-41e6-9e90-7858d1a3918d",
+      "zoneLabel": "包厢 2",
+      "zoneToken": "9a6f73659b421e934354c4f2",
+      "items": [
+        {
+          "menuId": "aed8320f-1dd1-4633-a5f9-273aaf6e15f3",
+          "name": "测试鸡翅",
+          "price": 18,
+          "quantity": 2,
+          "subtotal": 36
+        }
+      ],
+      "note": "少辣",
+      "total": 36,
+      "status": "served",
+      "createdAt": "2026-05-22T04:41:17.593Z",
+      "updatedAt": "2026-05-22T05:31:15.229Z"
+    }
+  ],
+  "carts": {
+    "67a53210-9334-4940-90be-a37a4c82919a": {
+      "items": {},
+      "note": "",
+      "updatedAt": "2026-05-22T05:46:09.175Z"
+    }
+  }
+}

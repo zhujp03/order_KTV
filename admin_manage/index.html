@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin 菜单与二维码管理</title>
+    <link rel="stylesheet" href="/style/main.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <h1>Admin 菜单编辑与二维码管理</h1>
+        <p>这里维护菜单、创建桌号/包厢二维码，并和接单看板保持同步。</p>
+      </section>
+
+      <section class="grid cols-2">
+        <article class="card">
+          <div class="row wrap" style="justify-content: space-between">
+            <h2>菜单编辑</h2>
+            <button id="addMenuBtn" class="secondary">新增菜品</button>
+          </div>
+          <div class="row wrap" style="margin-top: 10px">
+            <input id="categoryNameInput" placeholder="新分类名（例如：Cocktail）" style="max-width: 260px" />
+            <button id="addCategoryBtn" class="secondary">创建分类</button>
+          </div>
+          <div id="categoryList" class="row wrap" style="margin-top: 8px"></div>
+          <p id="categoryMsg" class="small muted" style="margin: 8px 0 0">请先创建分类，再编辑菜单。</p>
+          <table class="table" id="menuTable" style="margin-top: 8px">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>价格</th>
+                <th>分类</th>
+                <th>描述</th>
+                <th>上架</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="menuTbody"></tbody>
+          </table>
+          <div class="text-right" style="margin-top: 10px">
+            <button id="saveMenuBtn">保存菜单</button>
+          </div>
+          <p id="menuMsg" class="small muted" style="margin-bottom: 0"></p>
+        </article>
+
+        <article class="card">
+          <h2>桌号 / 包厢二维码</h2>
+          <div class="row wrap" style="margin-top: 8px">
+            <input id="zoneLabelInput" placeholder="例如：5个包厢、8桌" style="max-width: 260px" />
+            <button id="addZoneBtn" class="secondary">批量生成二维码</button>
+          </div>
+          <p class="small muted">输入数量后自动生成。包厢格式：1包、2包...；桌子格式：1号桌、2号桌...</p>
+          <p class="small muted">每个二维码 token 固定，可长期使用；如泄露可单独重置。每桌/包厢还有访问码，客人需输入访问码才能点单。</p>
+          <div id="zoneList" class="grid" style="margin-top: 8px"></div>
+        </article>
+      </section>
+
+      <section class="card" style="margin-top: 16px">
+        <h3>反追踪 / 隐私默认策略（雏形版）</h3>
+        <div class="notice small">
+          系统默认不接入第三方统计、不加载第三方字体脚本、不记录设备指纹；订单只关联“二维码 token + 桌号/包厢标签”，用于本地内网与 AWS 公网一致部署。
+        </div>
+      </section>
+    </main>
+
+    <script src="/admin_manage/app.js"></script>
+  </body>
+</html>
