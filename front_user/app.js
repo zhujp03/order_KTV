@@ -120,6 +120,9 @@ function hideAccessGate() {
 function clearSession(message = 'Session expired. Please re-enter access code.') {
   state.sessionToken = '';
   saveSessionToken(state.token, '');
+  state.ordersDigest = '';
+  ordersPanelEl.hidden = true;
+  ordersListEl.textContent = 'No submitted orders yet.';
   showAccessGate(message);
 }
 

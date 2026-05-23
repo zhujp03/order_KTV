@@ -1295,11 +1295,21 @@ app.get('/api/public/orders/:token', (req, res) => {
   const sessionCheck = requireZoneSession(req, res, zone);
   if (!sessionCheck.ok) return;
 
+  const periodStartIso = zone.access_code_updated_at || zone.created_at || nowIso();
+  const periodStartMs = new Date(periodStartIso).getTime();
+  const isInCurrentAccessPeriod = (order) => {
+    const createdMs = new Date(order.createdAt).getTime();
+    if (!Number.isFinite(createdMs)) return false;
+    return createdMs >= periodStartMs;
+  };
+
   const activeOrders = getOrderWithItems({ history: false })
     .filter((order) => order.zoneId === zone.id)
+    .filter(isInCurrentAccessPeriod)
     .map((order) => ({ ...order, source: 'active' }));
   const historyOrders = getOrderWithItems({ history: true })
     .filter((order) => order.zoneId === zone.id)
+    .filter(isInCurrentAccessPeriod)
     .map((order) => ({ ...order, source: 'history' }));
 
   const combined = [...activeOrders, ...historyOrders]
