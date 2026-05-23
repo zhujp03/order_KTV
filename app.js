@@ -54,6 +54,7 @@ const ZONE_ACCESS_CODE_LENGTH = envInt('ZONE_ACCESS_CODE_LENGTH', 4, 4, 8);
 const ZONE_SESSION_TTL_MINUTES = envInt('ZONE_SESSION_TTL_MINUTES', 120, 5, 1440);
 const ROTATE_ACCESS_CODE_ON_CHECKOUT = process.env.ROTATE_ACCESS_CODE_ON_CHECKOUT !== 'false';
 const SESSION_HEADER_NAME = 'x-zone-session';
+const CSP_ALLOW_INLINE_STYLE = process.env.CSP_ALLOW_INLINE_STYLE !== 'false';
 
 const ORDER_STATUSES = ['new', 'preparing', 'ready', 'served', 'cancelled'];
 const DEBUG_REQUESTS = process.env.DEBUG_REQUESTS === '1';
@@ -952,9 +953,10 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  const styleSrc = CSP_ALLOW_INLINE_STYLE ? "style-src 'self' 'unsafe-inline';" : "style-src 'self';";
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'self';",
+    `default-src 'self'; img-src 'self' data:; ${styleSrc} script-src 'self'; connect-src 'self'; frame-ancestors 'self';`,
   );
 
   if (req.path.startsWith('/api/')) {
@@ -1276,6 +1278,35 @@ app.post('/api/public/orders', (req, res) => {
     orderId,
     zoneLabel: zone.label,
     status: 'new',
+    session: {
+      token: sessionCheck.sessionToken,
+      expiresAt: sessionCheck.expiresAt,
+    },
+  });
+});
+
+app.get('/api/public/orders/:token', (req, res) => {
+  const token = sanitizeText(req.params.token, 100);
+
+  const zone = getZoneByToken(token);
+  if (!zone) {
+    return res.status(404).json({ error: 'QR code is invalid or expired.' });
+  }
+  const sessionCheck = requireZoneSession(req, res, zone);
+  if (!sessionCheck.ok) return;
+
+  const activeOrders = getOrderWithItems({ history: false })
+    .filter((order) => order.zoneId === zone.id)
+    .map((order) => ({ ...order, source: 'active' }));
+  const historyOrders = getOrderWithItems({ history: true })
+    .filter((order) => order.zoneId === zone.id)
+    .map((order) => ({ ...order, source: 'history' }));
+
+  const combined = [...activeOrders, ...historyOrders]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  return res.json({
+    orders: combined,
     session: {
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,

@@ -12,11 +12,11 @@ const state = {
   activeCategory: '',
   sessionToken: '',
   accessCodeRequired: false,
+  roomLabelRaw: '',
 };
 const TAX_RATE = 0.13;
 const SERVICE_RATE = 0.18;
 
-const venueNameEl = document.getElementById('venueName');
 const zoneLabelEl = document.getElementById('zoneLabel');
 const categoryTabsEl = document.getElementById('categoryTabs');
 const menuSectionsEl = document.getElementById('menuSections');
@@ -40,6 +40,16 @@ const sumTotalEl = document.getElementById('sumTotal');
 const noteInputEl = document.getElementById('noteInput');
 const submitBtnEl = document.getElementById('submitBtn');
 const submitMsgEl = document.getElementById('submitMsg');
+const ordersBtnEl = document.getElementById('ordersBtn');
+const ordersPanelEl = document.getElementById('ordersPanel');
+const ordersListEl = document.getElementById('ordersList');
+const orderStatusText = {
+  new: 'New',
+  preparing: 'Preparing',
+  ready: 'Ready',
+  served: 'Served',
+  cancelled: 'Cancelled',
+};
 
 function money(value) {
   return `$${Number(value).toFixed(2)}`;
@@ -47,6 +57,20 @@ function money(value) {
 
 function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function formatTime(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString();
+}
+
+function toRoomLabel(rawLabel) {
+  const label = String(rawLabel || '').trim();
+  const numberMatch = label.match(/\d+/);
+  if (numberMatch) {
+    return `Room ${numberMatch[0]}`;
+  }
+  return label ? `Room ${label}` : 'Room';
 }
 
 function getToken() {
@@ -187,20 +211,23 @@ function renderMenuSections() {
     .map((group) => {
       const itemsHtml = group.items
         .map(
-          (item) => `
+          (item) => {
+            const description = typeof item.description === 'string' ? item.description.trim() : '';
+            return `
             <article class="menu-item user-menu-item">
               <div class="menu-title-row">
                 <strong>${item.name}</strong>
                 <span class="price">${money(item.price)}</span>
               </div>
-              <div class="small muted">${item.description || 'No description'}</div>
+              ${description ? `<div class="small muted">${description}</div>` : ''}
               <div class="qty-controls">
                 <button class="light" data-action="dec" data-id="${item.id}" type="button">-</button>
                 <strong data-qty-for="${item.id}">0</strong>
                 <button class="secondary" data-action="inc" data-id="${item.id}" type="button">+</button>
               </div>
             </article>
-          `,
+          `;
+          },
         )
         .join('');
 
@@ -242,8 +269,8 @@ function renderCartSummary() {
     if (!item) continue;
 
     const subtotal = round2(item.price * qty);
-    const tax = round2(subtotal * TAX_RATE);
     const service = round2(subtotal * SERVICE_RATE);
+    const tax = round2((subtotal + service) * TAX_RATE);
     const total = round2(subtotal + tax + service);
 
     subtotalAll += subtotal;
@@ -284,8 +311,8 @@ function renderCartSummary() {
           </div>
           <div class="cart-item-breakdown">
             <div><span>Subtotal</span><strong>${money(row.subtotal)}</strong></div>
-            <div><span>Tax (13%)</span><strong>${money(row.tax)}</strong></div>
-            <div><span>Service (18%)</span><strong>${money(row.service)}</strong></div>
+            <div><span>Tax (HST 13%)</span><strong>${money(row.tax)}</strong></div>
+            <div><span>Service charge (18%)</span><strong>${money(row.service)}</strong></div>
             <div class="line-total"><span>Total</span><strong>${money(row.total)}</strong></div>
           </div>
         </div>
@@ -340,6 +367,39 @@ async function fetchSharedCart(syncNote = true) {
   applyServerCart(data.cart, { syncNote });
 }
 
+async function fetchSubmittedOrders() {
+  const data = await apiFetchJson(`/api/public/orders/${encodeURIComponent(state.token)}`);
+  syncSessionFromResponse(data);
+  return Array.isArray(data.orders) ? data.orders : [];
+}
+
+function renderSubmittedOrders(orders) {
+  if (!orders.length) {
+    ordersListEl.textContent = 'No submitted orders yet.';
+    return;
+  }
+
+  ordersListEl.innerHTML = orders
+    .map((order) => {
+      const itemsHtml = (order.items || [])
+        .map((item) => `<li>${item.name} x ${item.quantity} (${money(item.subtotal)})</li>`)
+        .join('');
+      return `
+        <article class="order-history-item">
+          <div class="head">
+            <strong>#${order.id.slice(0, 8)}</strong>
+            <span>${orderStatusText[order.status] || order.status}</span>
+          </div>
+          <div class="small muted">${formatTime(order.createdAt)}</div>
+          <ul>${itemsHtml}</ul>
+          <div><strong>Total: ${money(order.total)}</strong></div>
+          <div class="small muted">Note: ${order.note || 'None'}</div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
 async function mutateCart(menuId, delta) {
   const data = await apiFetchJson(`/api/public/cart/${encodeURIComponent(state.token)}/items`, {
     method: 'POST',
@@ -392,6 +452,9 @@ async function submitOrder() {
     syncSessionFromResponse(data);
 
     await fetchSharedCart(true);
+    const submittedOrders = await fetchSubmittedOrders();
+    renderSubmittedOrders(submittedOrders);
+    ordersPanelEl.hidden = false;
     submitMsgEl.textContent = `Order placed. Ref: ${data.orderId.slice(0, 8)}.`;
   } catch (error) {
     if (error.requiresAccessCode) {
@@ -561,6 +624,19 @@ function bindCartDrawer() {
   cartFabEl.addEventListener('click', openCartDrawer);
   cartCloseBtnEl.addEventListener('click', closeCartDrawer);
   cartOverlayEl.addEventListener('click', closeCartDrawer);
+  ordersBtnEl.addEventListener('click', async () => {
+    try {
+      const submittedOrders = await fetchSubmittedOrders();
+      renderSubmittedOrders(submittedOrders);
+      ordersPanelEl.hidden = false;
+    } catch (error) {
+      if (error.requiresAccessCode) {
+        clearSession('Session expired. Please verify access code again.');
+        return;
+      }
+      submitMsgEl.textContent = `Load orders failed: ${error.message}`;
+    }
+  });
 }
 
 function bindAccessGate() {
@@ -592,8 +668,7 @@ async function pollCartLoop() {
 async function loadContext() {
   state.token = getToken();
   if (!state.token) {
-    venueNameEl.textContent = 'Invalid QR Code';
-    zoneLabelEl.textContent = 'Please scan a valid table QR code.';
+    zoneLabelEl.textContent = 'Please scan a valid room QR code.';
     return;
   }
 
@@ -606,8 +681,8 @@ async function loadContext() {
       saveSessionToken(state.token, state.sessionToken);
     }
 
-    venueNameEl.textContent = data.venueName || 'Menu';
-    zoneLabelEl.textContent = `${data.zone?.label || 'Table'} • Live shared cart`;
+    state.roomLabelRaw = data.zone?.label || '';
+    zoneLabelEl.textContent = toRoomLabel(state.roomLabelRaw);
     state.menu = Array.isArray(data.menu) ? data.menu : [];
     state.categoryGroups = buildCategoryGroups(state.menu);
 
@@ -635,7 +710,6 @@ async function loadContext() {
     }
     setInterval(pollCartLoop, 1000);
   } catch (error) {
-    venueNameEl.textContent = 'Invalid QR Code';
     zoneLabelEl.textContent = error.message || 'Please try a valid QR link.';
   }
 }

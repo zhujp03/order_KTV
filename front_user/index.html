@@ -9,8 +9,7 @@
   <body class="user-page">
     <main class="app-shell user-shell">
       <section class="hero user-hero">
-        <h1 id="venueName">Loading Menu</h1>
-        <p id="zoneLabel">Identifying your table...</p>
+        <p id="zoneLabel">Identifying your room...</p>
       </section>
 
       <section id="accessGate" class="card access-gate" hidden>
@@ -57,10 +56,18 @@
           <div class="checkout-breakdown-row"><span>Service charge (18%)</span><strong id="sumService">$0.00</strong></div>
           <div class="checkout-breakdown-row total"><span>Total</span><strong id="sumTotal">$0.00</strong></div>
         </div>
-        <button id="submitBtn" type="button">Place Order</button>
+        <div class="drawer-actions">
+          <button id="ordersBtn" class="light" type="button">Orders</button>
+          <button id="submitBtn" type="button">Place Order</button>
+        </div>
       </div>
 
       <p id="submitMsg" class="small muted" style="margin-bottom: 0"></p>
+
+      <section id="ordersPanel" class="orders-panel" hidden>
+        <h3>Your Submitted Orders</h3>
+        <div id="ordersList" class="small muted">No submitted orders yet.</div>
+      </section>
     </aside>
 
     <script src="/front_user/app.js"></script>

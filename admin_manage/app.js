@@ -122,7 +122,7 @@ function renderZones() {
           <span class="small muted">token: ${zone.token.slice(0, 10)}...</span>
         </div>
         <div class="zone-meta">访问码：<strong>${escapeHtml(zone.accessCode || '----')}</strong></div>
-        <div class="zone-meta">当前订单：${zone.activeOrderCount || 0} 单 · 金额：￥${Number(zone.activeOrderTotal || 0).toFixed(2)}</div>
+        <div class="zone-meta">当前订单：${zone.activeOrderCount || 0} 单 · 金额：$${Number(zone.activeOrderTotal || 0).toFixed(2)}</div>
         ${
           zone.completed && zone.completedAt
             ? `<div class="zone-done-note">完成时间：${new Date(zone.completedAt).toLocaleString()}</div>`

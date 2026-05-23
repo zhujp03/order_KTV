@@ -18,7 +18,7 @@ function formatTime(iso) {
 }
 
 function currency(value) {
-  return `￥${Number(value).toFixed(2)}`;
+  return `$${Number(value).toFixed(2)}`;
 }
 
 function renderOrders(orders) {
