@@ -60,6 +60,27 @@ function money(value) {
   return `$${Number(value).toFixed(2)}`;
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function formatDescriptionHtml(raw) {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) return '';
+  const lines = text
+    .split(';')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => escapeHtml(line));
+  if (!lines.length) return '';
+  return lines.join('<br />');
+}
+
 function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
@@ -128,6 +149,7 @@ function clearSession(message = 'Session expired. Please re-enter access code.')
   saveSessionToken(state.token, '');
   state.ordersDigest = '';
   ordersPanelEl.hidden = true;
+  ordersBtnEl.textContent = 'Orders';
   ordersListEl.textContent = 'No submitted orders yet.';
   showAccessGate(message);
   applyAccessUiState();
@@ -249,14 +271,14 @@ function renderMenuSections() {
       const itemsHtml = group.items
         .map(
           (item) => {
-            const description = typeof item.description === 'string' ? item.description.trim() : '';
+            const descriptionHtml = formatDescriptionHtml(item.description);
             return `
             <article class="menu-item user-menu-item">
               <div class="menu-title-row">
                 <strong>${item.name}</strong>
                 <span class="price">${money(item.price)}</span>
               </div>
-              ${description ? `<div class="small muted">${description}</div>` : ''}
+              ${descriptionHtml ? `<div class="small muted">${descriptionHtml}</div>` : ''}
               <div class="qty-controls">
                 <button class="light" data-action="dec" data-id="${item.id}" type="button">-</button>
                 <strong data-qty-for="${item.id}">0</strong>
@@ -722,10 +744,16 @@ function bindCartDrawer() {
   cartCloseBtnEl.addEventListener('click', closeCartDrawer);
   cartOverlayEl.addEventListener('click', closeCartDrawer);
   ordersBtnEl.addEventListener('click', async () => {
+    if (!ordersPanelEl.hidden) {
+      ordersPanelEl.hidden = true;
+      ordersBtnEl.textContent = 'Orders';
+      return;
+    }
     try {
       const submittedOrders = await fetchSubmittedOrders();
       renderSubmittedOrders(submittedOrders);
       ordersPanelEl.hidden = false;
+      ordersBtnEl.textContent = 'Close Orders';
     } catch (error) {
       if (error.requiresAccessCode) {
         clearSession('Session expired. Please verify access code again.');
