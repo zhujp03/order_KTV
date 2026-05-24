@@ -275,6 +275,7 @@ function renderMenuSections() {
         .map(
           (item) => {
             const descriptionHtml = formatDescriptionHtml(item.description);
+            const isAvailable = item.available !== false;
             return `
             <article class="menu-item user-menu-item">
               <div class="menu-title-row">
@@ -282,11 +283,15 @@ function renderMenuSections() {
                 <span class="price">${money(item.price)}</span>
               </div>
               ${descriptionHtml ? `<div class="small muted">${descriptionHtml}</div>` : ''}
-              <div class="qty-controls">
-                <button class="light" data-action="dec" data-id="${item.id}" type="button">-</button>
-                <strong data-qty-for="${item.id}">0</strong>
-                <button class="secondary" data-action="inc" data-id="${item.id}" type="button">+</button>
-              </div>
+              ${
+                isAvailable
+                  ? `<div class="qty-controls">
+                      <button class="light" data-action="dec" data-id="${item.id}" type="button">-</button>
+                      <strong data-qty-for="${item.id}">0</strong>
+                      <button class="secondary" data-action="inc" data-id="${item.id}" type="button">+</button>
+                    </div>`
+                  : `<div class="qty-controls"><span class="badge status-cancelled">Out of stock</span></div>`
+              }
             </article>
           `;
           },

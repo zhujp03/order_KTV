@@ -1192,7 +1192,7 @@ app.get('/api/public/context/:token', (req, res) => {
       label: zone.label,
       token: zone.token,
     },
-    menu: getActiveMenu(),
+    menu: getAllMenu(),
     categories: getAllCategories(),
     cart,
     session,
@@ -1310,7 +1310,7 @@ app.post('/api/public/orders', (req, res) => {
   const sessionCheck = requireZoneSession(req, res, zone);
   if (!sessionCheck.ok) return;
 
-  const publicMenu = getActiveMenu();
+  const publicMenu = getAllMenu();
   const menuMap = new Map(publicMenu.map((item) => [item.id, item]));
   const zoneCart = getZoneCart(zone.id);
 
@@ -1325,7 +1325,7 @@ app.post('/api/public/orders', (req, res) => {
     if (!menuId || !Number.isInteger(quantity) || quantity < 1 || quantity > 99) continue;
 
     const menuItem = menuMap.get(menuId);
-    if (!menuItem) continue;
+    if (!menuItem || menuItem.available !== true) continue;
 
     normalizedItems.push({
       menuId: menuItem.id,
