@@ -60,7 +60,7 @@ body {
   margin-top: 18px;
 }
 
-@media (min-width: 920px) {
+@media (min-width: 768px) {
   .grid.cols-2 {
     grid-template-columns: 1.25fr 0.75fr;
   }
@@ -385,18 +385,20 @@ hr.soft {
   background: #fff;
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 768px) {
   .admin-board {
-    grid-template-columns: minmax(360px, 42%) minmax(0, 58%);
+    grid-template-columns: minmax(300px, 40%) minmax(0, 60%);
     align-items: start;
   }
 
   .admin-board > .card {
-    min-height: calc(100vh - 230px);
-    max-height: calc(100vh - 230px);
+    min-height: calc(100vh - 200px);
+    max-height: calc(100vh - 200px);
     overflow: auto;
   }
+}
 
+@media (min-width: 1100px) {
   .admin-orders-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
