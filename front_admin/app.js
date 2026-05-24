@@ -3,6 +3,7 @@ const zoneTodoWrapEl = document.getElementById('zoneTodoWrap');
 const statusFilterEl = document.getElementById('statusFilter');
 const refreshBtnEl = document.getElementById('refreshBtn');
 const lastUpdatedEl = document.getElementById('lastUpdated');
+const soundToggleBtnEl = document.getElementById('soundToggleBtn');
 const zoneSessionDrawerEl = document.getElementById('zoneSessionDrawer');
 const zoneSessionDrawerBackdropEl = document.getElementById('zoneSessionDrawerBackdrop');
 const zoneSessionTitleEl = document.getElementById('zoneSessionTitle');
@@ -22,6 +23,9 @@ const statusText = {
 const adminState = {
   zones: [],
   selectedZoneId: '',
+  soundEnabled: false,
+  audioCtx: null,
+  lastNewCount: null,
 };
 
 function formatTime(iso) {
@@ -55,6 +59,7 @@ function renderOrders(orders) {
             <strong>${order.zoneLabel}</strong>
             <span class="badge ${statusClass}">${statusText[order.status] || order.status}</span>
           </div>
+          <div class="small muted">下单人：${order.customerName || 'Guest'}</div>
           <div class="small muted">订单 ${order.id.slice(0, 8)} · ${formatTime(order.createdAt)}</div>
           <ul>${items}</ul>
           <div><strong>合计 ${currency(order.total)}</strong></div>
@@ -162,6 +167,63 @@ async function fetchAllActiveOrders() {
   return Array.isArray(data.orders) ? data.orders : [];
 }
 
+function updateSoundButton() {
+  soundToggleBtnEl.textContent = adminState.soundEnabled ? 'Sound On' : 'Sound Off';
+}
+
+async function ensureAudioContextReady() {
+  if (!adminState.audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) throw new Error('Browser does not support audio context.');
+    adminState.audioCtx = new Ctx();
+  }
+  if (adminState.audioCtx.state !== 'running') {
+    await adminState.audioCtx.resume();
+  }
+}
+
+function playNewOrderBeep() {
+  if (!adminState.soundEnabled || !adminState.audioCtx) return;
+  const ctx = adminState.audioCtx;
+  const now = ctx.currentTime;
+
+  const tone = (at) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.18, at + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.16);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(at);
+    osc.stop(at + 0.18);
+  };
+
+  tone(now);
+  tone(now + 0.22);
+}
+
+async function checkNewOrderAlert() {
+  const res = await fetch('/api/admin/orders?status=new');
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || '新单检测失败');
+  }
+  const count = Array.isArray(data.orders) ? data.orders.length : 0;
+
+  if (adminState.lastNewCount === null) {
+    adminState.lastNewCount = count;
+    return;
+  }
+
+  if (count > adminState.lastNewCount) {
+    playNewOrderBeep();
+  }
+  adminState.lastNewCount = count;
+}
+
 function getZoneById(zoneId) {
   return adminState.zones.find((z) => z.id === zoneId) || null;
 }
@@ -183,22 +245,40 @@ function renderZoneSessionOrders(zone, orders) {
     zoneSessionOrdersWrapEl.innerHTML = '<div class="card muted">该包厢当前 session 暂无订单。</div>';
     return;
   }
-  zoneSessionOrdersWrapEl.innerHTML = orders
-    .map((order) => {
-      const items = order.items
-        .map((item) => `<li>${item.name} x ${item.quantity} <span class="muted">(${currency(item.subtotal)})</span></li>`)
+  const groups = new Map();
+  for (const order of orders) {
+    const key = order.customerName || 'Guest';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(order);
+  }
+
+  zoneSessionOrdersWrapEl.innerHTML = [...groups.entries()]
+    .map(([customerName, customerOrders]) => {
+      const ordersHtml = customerOrders
+        .map((order) => {
+          const items = order.items
+            .map((item) => `<li>${item.name} x ${item.quantity} <span class="muted">(${currency(item.subtotal)})</span></li>`)
+            .join('');
+          return `
+            <article class="order-card">
+              <div class="order-head">
+                <strong>#${order.id.slice(0, 8)}</strong>
+                <span class="badge status-${order.status}">${statusText[order.status] || order.status}</span>
+              </div>
+              <div class="small muted">${formatTime(order.createdAt)}</div>
+              <ul>${items}</ul>
+              <div><strong>合计 ${currency(order.total)}</strong></div>
+              <div class="small">备注：${order.note || '无'}</div>
+            </article>
+          `;
+        })
         .join('');
+
       return `
-        <article class="order-card">
-          <div class="order-head">
-            <strong>#${order.id.slice(0, 8)}</strong>
-            <span class="badge status-${order.status}">${statusText[order.status] || order.status}</span>
-          </div>
-          <div class="small muted">${formatTime(order.createdAt)}</div>
-          <ul>${items}</ul>
-          <div><strong>合计 ${currency(order.total)}</strong></div>
-          <div class="small">备注：${order.note || '无'}</div>
-        </article>
+        <section class="card">
+          <h3 style="margin:0 0 8px;">${customerName}</h3>
+          <div class="grid" style="margin-top:0;">${ordersHtml}</div>
+        </section>
       `;
     })
     .join('');
@@ -241,6 +321,7 @@ async function refreshZoneSessionDrawer() {
 async function loadAll() {
   try {
     await Promise.all([loadOrders(), loadZones()]);
+    await checkNewOrderAlert();
     await refreshZoneSessionDrawer();
     lastUpdatedEl.textContent = `最近刷新: ${new Date().toLocaleTimeString()}`;
   } catch (error) {
@@ -311,6 +392,21 @@ zoneSessionCheckoutBtnEl.addEventListener('click', async () => {
 
 refreshBtnEl.addEventListener('click', loadAll);
 statusFilterEl.addEventListener('change', loadAll);
+soundToggleBtnEl.addEventListener('click', async () => {
+  try {
+    if (!adminState.soundEnabled) {
+      await ensureAudioContextReady();
+      adminState.soundEnabled = true;
+      playNewOrderBeep();
+    } else {
+      adminState.soundEnabled = false;
+    }
+    updateSoundButton();
+  } catch (error) {
+    alert(`无法启用提示音：${error.message}`);
+  }
+});
 
+updateSoundButton();
 loadAll();
 setInterval(loadAll, 5000);

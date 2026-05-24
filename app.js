@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS orders (
   zone_id TEXT NOT NULL,
   zone_label TEXT NOT NULL,
   zone_token TEXT NOT NULL,
+  customer_name TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   total REAL NOT NULL,
   status TEXT NOT NULL,
@@ -278,6 +279,7 @@ CREATE TABLE IF NOT EXISTS order_history (
   zone_id TEXT NOT NULL,
   zone_label TEXT NOT NULL,
   zone_token TEXT NOT NULL,
+  customer_name TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   total REAL NOT NULL,
   status TEXT NOT NULL,
@@ -302,6 +304,7 @@ CREATE TABLE IF NOT EXISTS zone_sessions (
   id TEXT PRIMARY KEY,
   zone_id TEXT NOT NULL,
   session_token TEXT NOT NULL UNIQUE,
+  customer_name TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
@@ -336,6 +339,15 @@ if (!hasColumn('categories', 'sort_index')) {
 }
 if (!hasColumn('menu', 'sort_index')) {
   db.exec('ALTER TABLE menu ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0');
+}
+if (!hasColumn('orders', 'customer_name')) {
+  db.exec("ALTER TABLE orders ADD COLUMN customer_name TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('order_history', 'customer_name')) {
+  db.exec("ALTER TABLE order_history ADD COLUMN customer_name TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('zone_sessions', 'customer_name')) {
+  db.exec("ALTER TABLE zone_sessions ADD COLUMN customer_name TEXT NOT NULL DEFAULT ''");
 }
 
 function getSetting(key) {
@@ -506,18 +518,19 @@ function revokeZoneSessions(zoneId) {
     .run(nowIso(), zoneId);
 }
 
-function createZoneSession(zoneId) {
+function createZoneSession(zoneId, customerName = '') {
   const createdAt = nowIso();
   const expiresAt = minutesFromNow(ZONE_SESSION_TTL_MINUTES);
   const sessionToken = createSessionToken();
   const id = createId();
+  const safeCustomerName = sanitizeText(customerName, 40);
 
   db.prepare(`
-    INSERT INTO zone_sessions(id, zone_id, session_token, created_at, last_seen_at, expires_at, revoked_at)
-    VALUES (?, ?, ?, ?, ?, ?, NULL)
-  `).run(id, zoneId, sessionToken, createdAt, createdAt, expiresAt);
+    INSERT INTO zone_sessions(id, zone_id, session_token, customer_name, created_at, last_seen_at, expires_at, revoked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+  `).run(id, zoneId, sessionToken, safeCustomerName, createdAt, createdAt, expiresAt);
 
-  return { id, sessionToken, expiresAt };
+  return { id, sessionToken, expiresAt, customerName: safeCustomerName };
 }
 
 function findValidZoneSession(zoneId, sessionToken) {
@@ -525,7 +538,7 @@ function findValidZoneSession(zoneId, sessionToken) {
   if (!token) return { ok: false, reason: 'missing' };
 
   const row = db.prepare(`
-    SELECT id, zone_id, session_token, created_at, last_seen_at, expires_at, revoked_at
+    SELECT id, zone_id, session_token, customer_name, created_at, last_seen_at, expires_at, revoked_at
     FROM zone_sessions
     WHERE zone_id = ? AND session_token = ?
     LIMIT 1
@@ -564,14 +577,15 @@ const archiveAndClearZoneOrdersTx = db.transaction((zoneId, checkoutAt) => {
 
     db.prepare(`
       INSERT OR REPLACE INTO order_history(
-        id, zone_id, zone_label, zone_token, note, total, status,
+        id, zone_id, zone_label, zone_token, customer_name, note, total, status,
         created_at, updated_at, archived_at, checkout_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       order.id,
       order.zone_id,
       order.zone_label,
       order.zone_token,
+      sanitizeText(order.customer_name || '', 40),
       order.note || '',
       round2(order.total),
       order.status,
@@ -707,6 +721,7 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
     zoneId: order.zone_id,
     zoneLabel: order.zone_label,
     zoneToken: order.zone_token,
+    customerName: sanitizeText(order.customer_name || '', 40),
     items,
     note: order.note || '',
     total: calculateOrderGrandTotal(items),
@@ -1084,7 +1099,7 @@ function sessionRequiredResponse(res, message = 'Session expired. Please verify 
 
 function requireZoneSession(req, res, zone) {
   if (!ZONE_ACCESS_CODE_REQUIRED) {
-    return { ok: true, sessionToken: '' };
+    return { ok: true, sessionToken: '', customerName: '' };
   }
 
   const sessionToken = req.get(SESSION_HEADER_NAME) || '';
@@ -1098,12 +1113,18 @@ function requireZoneSession(req, res, zone) {
   }
 
   const expiresAt = touchZoneSession(result.session.id);
-  return { ok: true, sessionToken: result.session.session_token, expiresAt };
+  return {
+    ok: true,
+    sessionToken: result.session.session_token,
+    expiresAt,
+    customerName: sanitizeText(result.session.customer_name || '', 40),
+  };
 }
 
 app.post('/api/public/session/open', (req, res) => {
   const token = sanitizeText(req.body?.token, 100);
   const accessCode = sanitizeText(req.body?.accessCode, 20);
+  const customerName = sanitizeText(req.body?.customerName, 40);
 
   if (!token) {
     return res.status(400).json({ error: 'Missing token.' });
@@ -1121,8 +1142,11 @@ app.post('/api/public/session/open', (req, res) => {
       requiresAccessCode: true,
     });
   }
+  if (!customerName) {
+    return res.status(400).json({ error: 'Name is required.' });
+  }
 
-  const session = createZoneSession(zone.id);
+  const session = createZoneSession(zone.id, customerName);
   return res.status(201).json({
     ok: true,
     sessionToken: session.sessionToken,
@@ -1133,6 +1157,7 @@ app.post('/api/public/session/open', (req, res) => {
       label: zone.label,
       token: zone.token,
     },
+    customerName: session.customerName,
     cart: getZoneCart(zone.id),
   });
 });
@@ -1153,7 +1178,7 @@ app.get('/api/public/context/:token', (req, res) => {
     const check = findValidZoneSession(zone.id, sessionToken);
     if (check.ok) {
       const expiresAt = touchZoneSession(check.session.id);
-      session = { token: check.session.session_token, expiresAt };
+      session = { token: check.session.session_token, expiresAt, customerName: sanitizeText(check.session.customer_name || '', 40) };
     } else {
       cart = { items: {}, note: '', updatedAt: nowIso() };
     }
@@ -1192,6 +1217,7 @@ app.get('/api/public/cart/:token', (req, res) => {
     session: {
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
+      customerName: sessionCheck.customerName,
     },
   });
 });
@@ -1236,6 +1262,7 @@ app.post('/api/public/cart/:token/items', (req, res) => {
     session: {
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
+      customerName: sessionCheck.customerName,
     },
   });
 });
@@ -1261,6 +1288,7 @@ app.put('/api/public/cart/:token/note', (req, res) => {
     session: {
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
+      customerName: sessionCheck.customerName,
     },
   });
 });
@@ -1320,13 +1348,14 @@ app.post('/api/public/orders', (req, res) => {
   const createOrderTx = db.transaction(() => {
     db.prepare(`
       INSERT INTO orders(
-        id, zone_id, zone_label, zone_token, note, total, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, zone_id, zone_label, zone_token, customer_name, note, total, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       orderId,
       zone.id,
       zone.label,
       zone.token,
+      sessionCheck.customerName || '',
       finalNote,
       total,
       'new',
@@ -1364,6 +1393,7 @@ app.post('/api/public/orders', (req, res) => {
     session: {
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
+      customerName: sessionCheck.customerName,
     },
   });
 });
@@ -1403,6 +1433,7 @@ app.get('/api/public/orders/:token', (req, res) => {
     session: {
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
+      customerName: sessionCheck.customerName,
     },
   });
 });

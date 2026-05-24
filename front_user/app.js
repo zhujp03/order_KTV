@@ -13,6 +13,7 @@ const state = {
   activeCategory: '',
   sessionToken: '',
   accessCodeRequired: false,
+  customerName: '',
   roomLabelRaw: '',
   categoryObserver: null,
   categories: [],
@@ -25,6 +26,7 @@ const userHeroEl = document.querySelector('.user-hero');
 const categoryTabsEl = document.getElementById('categoryTabs');
 const menuSectionsEl = document.getElementById('menuSections');
 const accessGateEl = document.getElementById('accessGate');
+const customerNameInputEl = document.getElementById('customerNameInput');
 const accessCodeInputEl = document.getElementById('accessCodeInput');
 const verifyAccessBtnEl = document.getElementById('verifyAccessBtn');
 const accessMsgEl = document.getElementById('accessMsg');
@@ -146,6 +148,7 @@ function hideAccessGate() {
 
 function clearSession(message = 'Session expired. Please re-enter access code.') {
   state.sessionToken = '';
+  state.customerName = '';
   saveSessionToken(state.token, '');
   state.ordersDigest = '';
   ordersPanelEl.hidden = true;
@@ -573,7 +576,12 @@ function scheduleNoteSync() {
 }
 
 async function openSessionWithAccessCode() {
+  const customerName = customerNameInputEl.value.trim();
   const code = accessCodeInputEl.value.trim();
+  if (!customerName) {
+    accessMsgEl.textContent = 'Please enter your name.';
+    return false;
+  }
   if (!code) {
     accessMsgEl.textContent = 'Please enter an access code.';
     return false;
@@ -587,12 +595,15 @@ async function openSessionWithAccessCode() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         token: state.token,
+        customerName,
         accessCode: code,
       }),
     });
     state.sessionToken = data.sessionToken || '';
+    state.customerName = data.customerName || customerName;
     saveSessionToken(state.token, state.sessionToken);
     hideAccessGate();
+    customerNameInputEl.value = '';
     accessCodeInputEl.value = '';
     applyServerCart(data.cart || { items: {}, note: '' }, { syncNote: true });
     await fetchSharedCart(true);
@@ -771,6 +782,11 @@ function bindAccessGate() {
     event.preventDefault();
     await openSessionWithAccessCode();
   });
+  customerNameInputEl.addEventListener('keydown', async (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    await openSessionWithAccessCode();
+  });
 }
 
 async function pollCartLoop() {
@@ -816,6 +832,7 @@ async function loadContext() {
     state.accessCodeRequired = data.accessCodeRequired === true;
     if (data?.session?.token) {
       state.sessionToken = data.session.token;
+      state.customerName = data.session.customerName || '';
       saveSessionToken(state.token, state.sessionToken);
     }
 
