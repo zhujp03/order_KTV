@@ -602,6 +602,25 @@ hr.soft {
   font-size: 0.98rem;
 }
 
+.user-page .room-live-panel {
+  margin-top: 10px;
+}
+
+.user-page .room-live-person {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 9px;
+  background: #fff;
+  margin-bottom: 8px;
+}
+
+.user-page .room-live-person .head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .user-page .order-history-item {
   border: 1px solid var(--line);
   border-radius: 10px;

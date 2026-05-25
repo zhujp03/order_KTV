@@ -7,11 +7,14 @@ const state = {
   lastCartDigest: '',
   cartSummaryDigest: '',
   ordersDigest: '',
+  roomCarts: [],
+  roomCartsDigest: '',
   noteEditing: false,
   noteSyncTimer: null,
   polling: false,
   activeCategory: '',
   sessionToken: '',
+  sessionId: '',
   accessCodeRequired: false,
   customerName: '',
   roomLabelRaw: '',
@@ -50,6 +53,7 @@ const submitMsgEl = document.getElementById('submitMsg');
 const ordersBtnEl = document.getElementById('ordersBtn');
 const ordersPanelEl = document.getElementById('ordersPanel');
 const ordersListEl = document.getElementById('ordersList');
+const roomLiveListEl = document.getElementById('roomLiveList');
 const orderStatusText = {
   new: 'New',
   preparing: 'Preparing',
@@ -175,12 +179,16 @@ function hideAccessGate() {
 
 function clearSession(message = 'Session expired. Please re-enter access code.') {
   state.sessionToken = '';
+  state.sessionId = '';
   state.customerName = '';
   saveSessionToken(state.token, '');
   state.ordersDigest = '';
+  state.roomCarts = [];
+  state.roomCartsDigest = '';
   ordersPanelEl.hidden = true;
   ordersBtnEl.textContent = 'Orders';
   ordersListEl.textContent = 'No submitted orders yet.';
+  roomLiveListEl.textContent = 'No live items yet.';
   showAccessGate(message);
   applyAccessUiState();
 }
@@ -423,6 +431,74 @@ function renderCartSummary() {
   cartFabTotalEl.textContent = money(grandTotal);
 }
 
+function normalizeRoomCartsFromServer(roomCarts) {
+  if (!Array.isArray(roomCarts)) return [];
+  return roomCarts
+    .map((entry) => {
+      const ownerId = String(entry?.ownerId || '').trim();
+      const customerName = String(entry?.customerName || '').trim() || 'Guest';
+      const note = String(entry?.note || '').trim();
+      const updatedAt = String(entry?.updatedAt || '');
+      const items = sortedItemsObject(entry?.items || {});
+      return { ownerId, customerName, note, updatedAt, items };
+    })
+    .filter((entry) => Object.keys(entry.items).length > 0 || entry.note);
+}
+
+function renderRoomLiveCarts() {
+  const normalized = (state.roomCarts || []).map((entry) => ({
+    ownerId: entry.ownerId,
+    customerName: entry.customerName,
+    note: entry.note,
+    updatedAt: entry.updatedAt,
+    items: sortedItemsObject(entry.items || {}),
+  }));
+  const digest = JSON.stringify(normalized);
+  if (digest === state.roomCartsDigest) return;
+  state.roomCartsDigest = digest;
+
+  if (!normalized.length) {
+    roomLiveListEl.textContent = 'No live items yet.';
+    return;
+  }
+
+  const menuMap = new Map(state.menu.map((item) => [item.id, item]));
+  roomLiveListEl.innerHTML = normalized
+    .map((entry) => {
+      const isMe = state.sessionId && entry.ownerId && entry.ownerId === state.sessionId;
+      const who = isMe ? `${entry.customerName} (You)` : entry.customerName;
+
+      const itemLines = Object.entries(entry.items)
+        .map(([menuId, qtyRaw]) => {
+          const qty = Number(qtyRaw || 0);
+          if (!qty) return '';
+          const menuItem = menuMap.get(menuId);
+          const name = menuItem?.name || menuId;
+          const subtotal = menuItem ? round2(Number(menuItem.price || 0) * qty) : 0;
+          return `<li>${escapeHtml(name)} x ${qty}${menuItem ? ` (${money(subtotal)})` : ''}</li>`;
+        })
+        .filter(Boolean)
+        .join('');
+
+      return `
+        <article class="room-live-person">
+          <div class="head">
+            <strong>${escapeHtml(who)}</strong>
+            <span class="small muted">${formatTime(entry.updatedAt)}</span>
+          </div>
+          ${itemLines ? `<ul>${itemLines}</ul>` : ''}
+          <div class="small muted">Note: ${entry.note ? escapeHtml(entry.note) : 'None'}</div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
+function applyRoomCarts(roomCarts) {
+  state.roomCarts = normalizeRoomCartsFromServer(roomCarts);
+  renderRoomLiveCarts();
+}
+
 function applyServerCart(cart, options = {}) {
   const items = sortedItemsObject(cart?.items || {});
   const note = typeof cart?.note === 'string' ? cart.note : '';
@@ -448,6 +524,11 @@ function applyServerCart(cart, options = {}) {
 }
 
 function syncSessionFromResponse(data) {
+  const sessionId = data?.session?.id;
+  if (typeof sessionId === 'string' && sessionId) {
+    state.sessionId = sessionId;
+  }
+
   const token = data?.session?.token;
   if (typeof token === 'string' && token) {
     state.sessionToken = token;
@@ -459,6 +540,7 @@ async function fetchSharedCart(syncNote = true) {
   const data = await apiFetchJson(`/api/public/cart/${encodeURIComponent(state.token)}`);
   syncSessionFromResponse(data);
   applyServerCart(data.cart, { syncNote });
+  applyRoomCarts(data.roomCarts);
 }
 
 async function fetchSubmittedOrders() {
@@ -519,6 +601,7 @@ async function mutateCart(menuId, delta) {
   });
   syncSessionFromResponse(data);
   applyServerCart(data.cart, { syncNote: true });
+  applyRoomCarts(data.roomCarts);
 }
 
 function applyLocalDelta(menuId, delta) {
@@ -557,10 +640,10 @@ async function submitOrder() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         token: state.token,
-        useSharedCart: true,
       }),
     });
     syncSessionFromResponse(data);
+    applyRoomCarts(data.roomCarts);
 
     await fetchSharedCart(true);
     const submittedOrders = await fetchSubmittedOrders();
@@ -591,6 +674,7 @@ async function syncNoteToServer() {
     });
     syncSessionFromResponse(data);
     applyServerCart(data.cart, { syncNote: false });
+    applyRoomCarts(data.roomCarts);
   } catch (error) {
     if (error.requiresAccessCode) {
       clearSession('Session expired. Please verify access code again.');
@@ -632,12 +716,14 @@ async function openSessionWithAccessCode() {
       }),
     });
     state.sessionToken = data.sessionToken || '';
+    state.sessionId = data.sessionId || '';
     state.customerName = data.customerName || customerName;
     saveSessionToken(state.token, state.sessionToken);
     hideAccessGate();
     customerNameInputEl.value = '';
     accessCodeInputEl.value = '';
     applyServerCart(data.cart || { items: {}, note: '' }, { syncNote: true });
+    applyRoomCarts(data.roomCarts);
     await fetchSharedCart(true);
     return true;
   } catch (error) {
@@ -860,10 +946,12 @@ async function loadContext() {
 
   try {
     state.sessionToken = loadSessionToken(state.token);
+    state.sessionId = '';
     const data = await apiFetchJson(`/api/public/context/${encodeURIComponent(state.token)}`);
     state.accessCodeRequired = data.accessCodeRequired === true;
     if (data?.session?.token) {
       state.sessionToken = data.session.token;
+      state.sessionId = data.session.id || '';
       state.customerName = data.session.customerName || '';
       saveSessionToken(state.token, state.sessionToken);
     }
@@ -882,6 +970,7 @@ async function loadContext() {
     updateActiveCategoryFromScroll();
 
     applyServerCart(data.cart || { items: {}, note: '' }, { syncNote: true });
+    applyRoomCarts(data.roomCarts);
     applyAccessUiState();
 
     if (state.accessCodeRequired && !state.sessionToken) {

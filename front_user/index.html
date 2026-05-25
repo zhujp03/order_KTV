@@ -43,11 +43,15 @@
 
     <aside id="cartDrawer" class="cart-drawer" aria-hidden="true">
       <div class="cart-drawer-head">
-        <h2>Shared Cart</h2>
+        <h2>My Cart</h2>
         <button id="cartCloseBtn" class="light" type="button">Close</button>
       </div>
 
       <div id="cartList" class="small muted">Your cart is empty.</div>
+      <section id="roomLivePanel" class="orders-panel room-live-panel">
+        <h3>Room Live Cart (All Guests)</h3>
+        <div id="roomLiveList" class="small muted">No live items yet.</div>
+      </section>
 
       <hr class="soft" />
       <label for="noteInput" class="small">Order note</label>
@@ -69,7 +73,7 @@
       <p id="submitMsg" class="small muted" style="margin-bottom: 0"></p>
 
       <section id="ordersPanel" class="orders-panel" hidden>
-        <h3>Your Submitted Orders</h3>
+        <h3>Submitted Orders (Room)</h3>
         <div id="ordersList" class="small muted">No submitted orders yet.</div>
       </section>
     </aside>

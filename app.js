@@ -54,6 +54,7 @@ const ZONE_ACCESS_CODE_LENGTH = envInt('ZONE_ACCESS_CODE_LENGTH', 4, 4, 8);
 const ZONE_SESSION_TTL_MINUTES = envInt('ZONE_SESSION_TTL_MINUTES', 120, 5, 1440);
 const ROTATE_ACCESS_CODE_ON_CHECKOUT = process.env.ROTATE_ACCESS_CODE_ON_CHECKOUT !== 'false';
 const SESSION_HEADER_NAME = 'x-zone-session';
+const PUBLIC_CART_SESSION_ID = '__public__';
 const EMPLOYEE_SESSION_HEADER_NAME = 'x-employee-session';
 const EMPLOYEE_SESSION_TTL_MINUTES = envInt('EMPLOYEE_SESSION_TTL_MINUTES', 720, 30, 10080);
 const CSP_ALLOW_INLINE_STYLE = process.env.CSP_ALLOW_INLINE_STYLE !== 'false';
@@ -251,6 +252,16 @@ CREATE TABLE IF NOT EXISTS carts (
   FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS session_carts (
+  zone_id TEXT NOT NULL,
+  zone_session_id TEXT NOT NULL,
+  items_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(zone_id, zone_session_id),
+  FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   zone_id TEXT NOT NULL,
@@ -343,6 +354,7 @@ CREATE INDEX IF NOT EXISTS idx_order_history_created_at ON order_history(created
 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
 CREATE INDEX IF NOT EXISTS idx_zone_sessions_zone_id ON zone_sessions(zone_id);
 CREATE INDEX IF NOT EXISTS idx_zone_sessions_token ON zone_sessions(session_token);
+CREATE INDEX IF NOT EXISTS idx_session_carts_zone_id ON session_carts(zone_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_employee_id ON employee_sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_token ON employee_sessions(session_token);
 `);
@@ -480,41 +492,106 @@ function buildCartResponseFromRow(cartRow) {
   };
 }
 
-function ensureZoneCart(zoneId) {
-  db.prepare(`
-    INSERT OR IGNORE INTO carts(zone_id, items_json, note, updated_at)
-    VALUES (?, '{}', '', ?)
-  `).run(zoneId, nowIso());
+function normalizeCartOwnerKey(cartOwnerKey) {
+  const safe = sanitizeText(cartOwnerKey, 120);
+  return safe || PUBLIC_CART_SESSION_ID;
 }
 
-function getZoneCart(zoneId) {
-  ensureZoneCart(zoneId);
-  const row = db.prepare('SELECT * FROM carts WHERE zone_id = ?').get(zoneId);
+function ensureSessionCart(zoneId, cartOwnerKey) {
+  const ownerKey = normalizeCartOwnerKey(cartOwnerKey);
+  db.prepare(`
+    INSERT OR IGNORE INTO session_carts(zone_id, zone_session_id, items_json, note, updated_at)
+    VALUES (?, ?, '{}', '', ?)
+  `).run(zoneId, ownerKey, nowIso());
+}
+
+function getSessionCart(zoneId, cartOwnerKey) {
+  const ownerKey = normalizeCartOwnerKey(cartOwnerKey);
+  ensureSessionCart(zoneId, ownerKey);
+  const row = db
+    .prepare('SELECT * FROM session_carts WHERE zone_id = ? AND zone_session_id = ?')
+    .get(zoneId, ownerKey);
   return buildCartResponseFromRow(row);
 }
 
-function saveZoneCart(zoneId, cart) {
+function saveSessionCart(zoneId, cartOwnerKey, cart) {
+  const ownerKey = normalizeCartOwnerKey(cartOwnerKey);
   const safeItems = parseCartItems(JSON.stringify(cart.items || {}));
   const note = sanitizeText(cart.note || '', 240);
   db.prepare(`
-    INSERT INTO carts(zone_id, items_json, note, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(zone_id) DO UPDATE SET
+    INSERT INTO session_carts(zone_id, zone_session_id, items_json, note, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(zone_id, zone_session_id) DO UPDATE SET
       items_json = excluded.items_json,
       note = excluded.note,
       updated_at = excluded.updated_at
-  `).run(zoneId, JSON.stringify(safeItems), note, nowIso());
+  `).run(zoneId, ownerKey, JSON.stringify(safeItems), note, nowIso());
 }
 
-function clearZoneCart(zoneId) {
-  db.prepare(`
-    INSERT INTO carts(zone_id, items_json, note, updated_at)
-    VALUES (?, '{}', '', ?)
-    ON CONFLICT(zone_id) DO UPDATE SET
-      items_json = '{}',
-      note = '',
-      updated_at = excluded.updated_at
-  `).run(zoneId, nowIso());
+function clearSessionCart(zoneId, cartOwnerKey) {
+  saveSessionCart(zoneId, cartOwnerKey, { items: {}, note: '' });
+}
+
+function clearAllZoneCarts(zoneId) {
+  db.prepare('DELETE FROM session_carts WHERE zone_id = ?').run(zoneId);
+  // Legacy safety: also clear old shared cart row if present.
+  db.prepare('DELETE FROM carts WHERE zone_id = ?').run(zoneId);
+}
+
+function migrateLegacyZoneCartToPublic(zoneId) {
+  const legacyRow = db.prepare('SELECT * FROM carts WHERE zone_id = ?').get(zoneId);
+  if (!legacyRow) return;
+  const legacy = buildCartResponseFromRow(legacyRow);
+  const hasItems = Object.keys(legacy.items || {}).length > 0;
+  if (!hasItems && !legacy.note) return;
+
+  const existing = getSessionCart(zoneId, PUBLIC_CART_SESSION_ID);
+  const existingHasItems = Object.keys(existing.items || {}).length > 0;
+  if (existingHasItems || existing.note) return;
+  saveSessionCart(zoneId, PUBLIC_CART_SESSION_ID, legacy);
+}
+
+function getRoomLiveCarts(zoneId) {
+  const rows = db.prepare(`
+    SELECT
+      c.zone_session_id,
+      c.items_json,
+      c.note,
+      c.updated_at,
+      s.customer_name,
+      s.expires_at,
+      s.revoked_at
+    FROM session_carts c
+    LEFT JOIN zone_sessions s ON s.id = c.zone_session_id
+    WHERE c.zone_id = ?
+    ORDER BY datetime(c.updated_at) DESC
+  `).all(zoneId);
+
+  const nowMs = Date.now();
+  const roomCarts = [];
+  for (const row of rows) {
+    const items = parseCartItems(row.items_json);
+    const note = typeof row.note === 'string' ? row.note : '';
+    const hasContent = Object.keys(items).length > 0 || Boolean(note);
+    if (!hasContent) continue;
+
+    const ownerId = sanitizeText(row.zone_session_id || '', 120);
+    const isPublic = ownerId === PUBLIC_CART_SESSION_ID;
+    const revoked = Boolean(row.revoked_at);
+    const expired = row.expires_at ? (new Date(row.expires_at).getTime() <= nowMs) : false;
+    if (!isPublic && (revoked || expired)) continue;
+
+    const customerName = sanitizeText(row.customer_name || '', 40);
+    roomCarts.push({
+      ownerId,
+      customerName: customerName || (isPublic ? 'Guest' : `Guest ${ownerId.slice(0, 4)}`),
+      items,
+      note,
+      updatedAt: row.updated_at || nowIso(),
+    });
+  }
+
+  return roomCarts;
 }
 
 function getZoneByToken(token) {
@@ -966,6 +1043,10 @@ function maybeMigrateFromLegacyJson() {
         INSERT OR REPLACE INTO carts(zone_id, items_json, note, updated_at)
         VALUES (?, ?, ?, ?)
       `).run(zoneId, JSON.stringify(parseCartItems(JSON.stringify(items))), note, nowIso());
+      db.prepare(`
+        INSERT OR REPLACE INTO session_carts(zone_id, zone_session_id, items_json, note, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(zoneId, PUBLIC_CART_SESSION_ID, JSON.stringify(parseCartItems(JSON.stringify(items))), note, nowIso());
     }
 
     const insertOrderStmt = db.prepare(`
@@ -1091,7 +1172,7 @@ function seedDefaultsIfNeeded() {
         zone.completedAt,
         zone.createdAt,
       );
-      ensureZoneCart(zone.id);
+      // carts are created per user session when needed
     }
   }
 
@@ -1236,7 +1317,13 @@ function sessionRequiredResponse(res, message = 'Session expired. Please verify 
 
 function requireZoneSession(req, res, zone) {
   if (!ZONE_ACCESS_CODE_REQUIRED) {
-    return { ok: true, sessionToken: '', customerName: '' };
+    return {
+      ok: true,
+      sessionToken: '',
+      customerName: '',
+      sessionId: '',
+      cartOwnerKey: PUBLIC_CART_SESSION_ID,
+    };
   }
 
   const sessionToken = req.get(SESSION_HEADER_NAME) || '';
@@ -1254,6 +1341,8 @@ function requireZoneSession(req, res, zone) {
     ok: true,
     sessionToken: result.session.session_token,
     expiresAt,
+    sessionId: result.session.id,
+    cartOwnerKey: result.session.id,
     customerName: sanitizeText(result.session.customer_name || '', 40),
   };
 }
@@ -1284,9 +1373,11 @@ app.post('/api/public/session/open', (req, res) => {
   }
 
   const session = createZoneSession(zone.id, customerName);
+  migrateLegacyZoneCartToPublic(zone.id);
   return res.status(201).json({
     ok: true,
     sessionToken: session.sessionToken,
+    sessionId: session.id,
     expiresAt: session.expiresAt,
     ttlMinutes: ZONE_SESSION_TTL_MINUTES,
     zone: {
@@ -1295,7 +1386,8 @@ app.post('/api/public/session/open', (req, res) => {
       token: zone.token,
     },
     customerName: session.customerName,
-    cart: getZoneCart(zone.id),
+    cart: getSessionCart(zone.id, session.id),
+    roomCarts: getRoomLiveCarts(zone.id),
   });
 });
 
@@ -1308,17 +1400,29 @@ app.get('/api/public/context/:token', (req, res) => {
   }
 
   const venueName = getSetting('venue_name') || 'Universal Order System';
-  let cart = getZoneCart(zone.id);
+  let cart = { items: {}, note: '', updatedAt: nowIso() };
+  let roomCarts = [];
   let session = null;
   if (ZONE_ACCESS_CODE_REQUIRED) {
     const sessionToken = req.get(SESSION_HEADER_NAME) || '';
     const check = findValidZoneSession(zone.id, sessionToken);
     if (check.ok) {
       const expiresAt = touchZoneSession(check.session.id);
-      session = { token: check.session.session_token, expiresAt, customerName: sanitizeText(check.session.customer_name || '', 40) };
+      session = {
+        id: check.session.id,
+        token: check.session.session_token,
+        expiresAt,
+        customerName: sanitizeText(check.session.customer_name || '', 40),
+      };
+      cart = getSessionCart(zone.id, check.session.id);
+      roomCarts = getRoomLiveCarts(zone.id);
     } else {
       cart = { items: {}, note: '', updatedAt: nowIso() };
     }
+  } else {
+    migrateLegacyZoneCartToPublic(zone.id);
+    cart = getSessionCart(zone.id, PUBLIC_CART_SESSION_ID);
+    roomCarts = getRoomLiveCarts(zone.id);
   }
 
   return res.json({
@@ -1332,6 +1436,7 @@ app.get('/api/public/context/:token', (req, res) => {
     menu: getAllMenu(),
     categories: getAllCategories(),
     cart,
+    roomCarts,
     session,
   });
 });
@@ -1346,12 +1451,14 @@ app.get('/api/public/cart/:token', (req, res) => {
   const sessionCheck = requireZoneSession(req, res, zone);
   if (!sessionCheck.ok) return;
 
-  const cart = getZoneCart(zone.id);
+  const cart = getSessionCart(zone.id, sessionCheck.cartOwnerKey);
   return res.json({
     zoneId: zone.id,
     zoneLabel: zone.label,
     cart,
+    roomCarts: getRoomLiveCarts(zone.id),
     session: {
+      id: sessionCheck.sessionId || '',
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
       customerName: sessionCheck.customerName,
@@ -1380,7 +1487,7 @@ app.post('/api/public/cart/:token/items', (req, res) => {
     return res.status(400).json({ error: 'Menu item does not exist or is unavailable.' });
   }
 
-  const cart = getZoneCart(zone.id);
+  const cart = getSessionCart(zone.id, sessionCheck.cartOwnerKey);
   const current = Number(cart.items[menuId] || 0);
   const next = Math.max(0, Math.min(99, current + delta));
 
@@ -1391,12 +1498,14 @@ app.post('/api/public/cart/:token/items', (req, res) => {
     setZoneCompleted(zone.id, false);
   }
 
-  saveZoneCart(zone.id, cart);
+  saveSessionCart(zone.id, sessionCheck.cartOwnerKey, cart);
 
   return res.json({
     ok: true,
-    cart: getZoneCart(zone.id),
+    cart: getSessionCart(zone.id, sessionCheck.cartOwnerKey),
+    roomCarts: getRoomLiveCarts(zone.id),
     session: {
+      id: sessionCheck.sessionId || '',
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
       customerName: sessionCheck.customerName,
@@ -1415,14 +1524,16 @@ app.put('/api/public/cart/:token/note', (req, res) => {
   const sessionCheck = requireZoneSession(req, res, zone);
   if (!sessionCheck.ok) return;
 
-  const cart = getZoneCart(zone.id);
+  const cart = getSessionCart(zone.id, sessionCheck.cartOwnerKey);
   cart.note = note;
-  saveZoneCart(zone.id, cart);
+  saveSessionCart(zone.id, sessionCheck.cartOwnerKey, cart);
 
   return res.json({
     ok: true,
-    cart: getZoneCart(zone.id),
+    cart: getSessionCart(zone.id, sessionCheck.cartOwnerKey),
+    roomCarts: getRoomLiveCarts(zone.id),
     session: {
+      id: sessionCheck.sessionId || '',
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
       customerName: sessionCheck.customerName,
@@ -1434,7 +1545,6 @@ app.post('/api/public/orders', (req, res) => {
   const token = sanitizeText(req.body?.token, 100);
   const incomingItems = Array.isArray(req.body?.items) ? req.body.items : [];
   const incomingNote = sanitizeText(req.body?.note, 240);
-  const useSharedCart = req.body?.useSharedCart !== false;
 
   if (!token) {
     return res.status(400).json({ error: 'Missing token.' });
@@ -1449,11 +1559,11 @@ app.post('/api/public/orders', (req, res) => {
 
   const publicMenu = getAllMenu();
   const menuMap = new Map(publicMenu.map((item) => [item.id, item]));
-  const zoneCart = getZoneCart(zone.id);
+  const zoneCart = getSessionCart(zone.id, sessionCheck.cartOwnerKey);
 
-  const sourceItems = useSharedCart
-    ? Object.entries(zoneCart.items).map(([menuId, quantity]) => ({ menuId, quantity }))
-    : incomingItems;
+  const sourceItems = incomingItems.length
+    ? incomingItems
+    : Object.entries(zoneCart.items).map(([menuId, quantity]) => ({ menuId, quantity }));
 
   const normalizedItems = [];
   for (const raw of sourceItems) {
@@ -1517,7 +1627,7 @@ app.post('/api/public/orders', (req, res) => {
     }
 
     setZoneCompleted(zone.id, false);
-    clearZoneCart(zone.id);
+    clearSessionCart(zone.id, sessionCheck.cartOwnerKey);
   });
 
   createOrderTx();
@@ -1527,7 +1637,9 @@ app.post('/api/public/orders', (req, res) => {
     orderId,
     zoneLabel: zone.label,
     status: 'new',
+    roomCarts: getRoomLiveCarts(zone.id),
     session: {
+      id: sessionCheck.sessionId || '',
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
       customerName: sessionCheck.customerName,
@@ -1568,6 +1680,7 @@ app.get('/api/public/orders/:token', (req, res) => {
   return res.json({
     orders: combined,
     session: {
+      id: sessionCheck.sessionId || '',
       token: sessionCheck.sessionToken,
       expiresAt: sessionCheck.expiresAt,
       customerName: sessionCheck.customerName,
@@ -1845,7 +1958,7 @@ app.post('/api/admin/zones', (req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(zone.id, zone.label, zone.token, zone.accessCode, zone.accessCodeUpdatedAt, 0, null, zone.createdAt);
 
-  ensureZoneCart(zone.id);
+  // carts are created per user session when needed
   return res.status(201).json({ ok: true, zone });
 });
 
@@ -1949,7 +2062,7 @@ app.post('/api/admin/zones/:id/checkout', (req, res) => {
 
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
-  clearZoneCart(zoneId);
+  clearAllZoneCarts(zoneId);
   setZoneCompleted(zoneId, false);
   revokeZoneSessions(zoneId);
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
@@ -2006,7 +2119,7 @@ app.delete('/api/admin/zones/:id', (req, res) => {
   }
 
   archiveAndClearZoneOrdersTx(zoneId, nowIso());
-  clearZoneCart(zoneId);
+  clearAllZoneCarts(zoneId);
   revokeZoneSessions(zoneId);
   db.prepare('DELETE FROM zones WHERE id = ?').run(zoneId);
 
@@ -2182,7 +2295,7 @@ app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => 
   }
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
-  clearZoneCart(zoneId);
+  clearAllZoneCarts(zoneId);
   setZoneCompleted(zoneId, false);
   revokeZoneSessions(zoneId);
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
