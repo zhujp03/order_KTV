@@ -58,6 +58,9 @@ const PUBLIC_CART_SESSION_ID = '__public__';
 const EMPLOYEE_SESSION_HEADER_NAME = 'x-employee-session';
 const EMPLOYEE_SESSION_TTL_MINUTES = envInt('EMPLOYEE_SESSION_TTL_MINUTES', 720, 30, 10080);
 const CSP_ALLOW_INLINE_STYLE = process.env.CSP_ALLOW_INLINE_STYLE !== 'false';
+const SQLITE_BUSY_TIMEOUT_MS = envInt('SQLITE_BUSY_TIMEOUT_MS', 5000, 100, 60000);
+const WRITE_QUEUE_ENABLED = process.env.WRITE_QUEUE_ENABLED !== 'false';
+const WRITE_QUEUE_MAX_SIZE = envInt('WRITE_QUEUE_MAX_SIZE', 2000, 10, 100000);
 
 const ORDER_STATUSES = ['new', 'preparing', 'ready', 'served', 'cancelled'];
 const DEBUG_REQUESTS = process.env.DEBUG_REQUESTS === '1';
@@ -206,6 +209,97 @@ if (!fs.existsSync(dbDir)) {
 const db = new Sqlite(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const writeQueue = [];
+let writeQueueRunning = false;
+let writeQueueCurrent = null;
+let writeQueueSeq = 0;
+let writeQueueProcessed = 0;
+let writeQueueFailed = 0;
+
+function getWriteQueueInfo() {
+  return {
+    enabled: WRITE_QUEUE_ENABLED,
+    busyTimeoutMs: SQLITE_BUSY_TIMEOUT_MS,
+    maxSize: WRITE_QUEUE_MAX_SIZE,
+    pending: writeQueue.length,
+    processing: Boolean(writeQueueCurrent),
+    current: writeQueueCurrent
+      ? {
+          ticket: writeQueueCurrent.ticket,
+          task: writeQueueCurrent.task,
+          queuedAt: new Date(writeQueueCurrent.queuedAt).toISOString(),
+          startedAt: writeQueueCurrent.startedAt ? new Date(writeQueueCurrent.startedAt).toISOString() : null,
+        }
+      : null,
+    stats: {
+      processed: writeQueueProcessed,
+      failed: writeQueueFailed,
+    },
+  };
+}
+
+function runWriteQueue() {
+  if (writeQueueRunning) return;
+  writeQueueRunning = true;
+
+  const processNext = () => {
+    if (!writeQueue.length) {
+      writeQueueCurrent = null;
+      writeQueueRunning = false;
+      return;
+    }
+
+    const item = writeQueue.shift();
+    writeQueueCurrent = item;
+    writeQueueCurrent.startedAt = Date.now();
+
+    Promise.resolve()
+      .then(() => item.work())
+      .then((result) => {
+        writeQueueProcessed += 1;
+        writeQueueCurrent = null;
+        item.resolve(result);
+        setImmediate(processNext);
+      })
+      .catch((error) => {
+        writeQueueFailed += 1;
+        writeQueueCurrent = null;
+        item.reject(error);
+        setImmediate(processNext);
+      });
+  };
+
+  setImmediate(processNext);
+}
+
+function enqueueWrite(task, work) {
+  if (!WRITE_QUEUE_ENABLED) {
+    return Promise.resolve().then(work);
+  }
+
+  if (writeQueue.length >= WRITE_QUEUE_MAX_SIZE) {
+    const error = new Error('写入请求过多，请稍后重试。');
+    error.code = 'WRITE_QUEUE_FULL';
+    throw error;
+  }
+
+  const ticket = ++writeQueueSeq;
+  return new Promise((resolve, reject) => {
+    writeQueue.push({
+      ticket,
+      task,
+      queuedAt: Date.now(),
+      startedAt: null,
+      work,
+      resolve,
+      reject,
+    });
+    runWriteQueue();
+  });
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS settings (
@@ -1303,8 +1397,63 @@ app.get('/o/:token', (req, res) => {
   res.redirect(`/front_user/index.html?token=${token}`);
 });
 
+app.use('/api', (req, res, next) => {
+  if (!WRITE_METHODS.has(req.method)) {
+    return next();
+  }
+
+  const taskName = `${req.method} ${req.path}`;
+  let taskPromise;
+  try {
+    taskPromise = enqueueWrite(taskName, () => new Promise((resolve, reject) => {
+      let settled = false;
+
+      const cleanup = () => {
+        res.removeListener('finish', onDone);
+        res.removeListener('close', onDone);
+      };
+
+      const settle = (error = null) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+
+      const onDone = () => settle();
+
+      res.on('finish', onDone);
+      res.on('close', onDone);
+
+      try {
+        next();
+      } catch (error) {
+        settle(error);
+      }
+    }));
+  } catch (error) {
+    taskPromise = Promise.reject(error);
+  }
+
+  taskPromise.catch((error) => {
+    if (res.headersSent) return;
+    if (error?.code === 'WRITE_QUEUE_FULL') {
+      return res.status(503).json({
+        error: error.message,
+        code: error.code,
+        writeQueue: getWriteQueueInfo(),
+      });
+    }
+    return next(error);
+  });
+});
+
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, now: nowIso(), db: 'sqlite3' });
+  res.json({ ok: true, now: nowIso(), db: 'sqlite3', writeQueue: getWriteQueueInfo() });
 });
 
 function sessionRequiredResponse(res, message = 'Session expired. Please verify access code again.') {
@@ -2258,6 +2407,10 @@ app.get('/api/employee/auth/me', requireEmployeeAuth, (req, res) => {
   });
 });
 
+app.get('/api/employee/write-queue', requireEmployeeAuth, (req, res) => {
+  return res.json({ writeQueue: getWriteQueueInfo() });
+});
+
 app.get('/api/employee/orders', requireEmployeeAuth, (req, res) => {
   const status = sanitizeText(req.query.status, 40);
   if (status && !ORDER_STATUSES.includes(status)) {
@@ -2266,6 +2419,7 @@ app.get('/api/employee/orders', requireEmployeeAuth, (req, res) => {
   return res.json({
     orders: getOrderWithItems({ history: false, status }),
     statuses: ORDER_STATUSES,
+    writeQueue: getWriteQueueInfo(),
   });
 });
 
@@ -2313,6 +2467,7 @@ app.get('/api/admin/orders', requireEmployeeAuth, (req, res) => {
   return res.json({
     orders: getOrderWithItems({ history: false, status }),
     statuses: ORDER_STATUSES,
+    writeQueue: getWriteQueueInfo(),
   });
 });
 
@@ -2433,6 +2588,8 @@ function startServer(port = PORT, host = HOST) {
     }
     console.log(`[order-system] access code  -> ${ZONE_ACCESS_CODE_REQUIRED ? 'required' : 'disabled'}`);
     console.log(`[order-system] session ttl  -> ${ZONE_SESSION_TTL_MINUTES} minute(s)`);
+    console.log(`[order-system] write queue  -> ${WRITE_QUEUE_ENABLED ? `enabled (max=${WRITE_QUEUE_MAX_SIZE})` : 'disabled'}`);
+    console.log(`[order-system] sqlite busy  -> ${SQLITE_BUSY_TIMEOUT_MS}ms`);
     console.log('[order-system] user page    -> /front_user/index.html?token=<token>');
     console.log('[order-system] admin board  -> /front_admin/index.html');
     console.log('[order-system] admin manage -> /admin_manage/index.html');

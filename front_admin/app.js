@@ -18,6 +18,7 @@ const zoneSessionMetaEl = document.getElementById('zoneSessionMeta');
 const zoneSessionOrdersWrapEl = document.getElementById('zoneSessionOrdersWrap');
 const zoneSessionCloseBtnEl = document.getElementById('zoneSessionCloseBtn');
 const zoneSessionCheckoutBtnEl = document.getElementById('zoneSessionCheckoutBtn');
+const writeQueueStatusEl = document.getElementById('writeQueueStatus');
 
 const statusText = {
   new: '新单',
@@ -35,6 +36,7 @@ const adminState = {
   lastNewCount: null,
   employeeToken: localStorage.getItem('employee_session_token') || '',
   employeeUsername: localStorage.getItem('employee_session_username') || '',
+  writeQueue: null,
 };
 
 function getEmployeeAuthHeaders() {
@@ -145,6 +147,17 @@ function renderZones(zones) {
     .join('');
 }
 
+function renderWriteQueue(info) {
+  if (!writeQueueStatusEl) return;
+  if (!info || typeof info !== 'object') {
+    writeQueueStatusEl.textContent = '写入队列：-';
+    return;
+  }
+  const pending = Number(info.pending || 0);
+  const processing = Boolean(info.processing);
+  writeQueueStatusEl.textContent = `写入队列：待处理 ${pending} · ${processing ? '写入中' : '空闲'}`;
+}
+
 async function updateOrderStatus(orderId, status) {
   await employeeApiFetch(`/api/employee/orders/${encodeURIComponent(orderId)}`, {
     method: 'PATCH',
@@ -182,6 +195,8 @@ async function loadOrders() {
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
 
   const data = await employeeApiFetch(`/api/employee/orders${query}`);
+  adminState.writeQueue = data.writeQueue || null;
+  renderWriteQueue(adminState.writeQueue);
 
   renderOrders(Array.isArray(data.orders) ? data.orders : []);
 }
@@ -195,6 +210,8 @@ async function loadZones() {
 
 async function fetchAllActiveOrders() {
   const data = await employeeApiFetch('/api/employee/orders');
+  adminState.writeQueue = data.writeQueue || null;
+  renderWriteQueue(adminState.writeQueue);
   return Array.isArray(data.orders) ? data.orders : [];
 }
 

@@ -30,6 +30,10 @@
 ## 4) 关键变量
 - `PUBLIC_BASE_URL`: 二维码里生成的访问地址根域名
 - `TRUST_PROXY`: 部署在反向代理后必须开启
+- `DB_PATH`: SQLite 数据文件位置
+- `SQLITE_BUSY_TIMEOUT_MS`: SQLite 锁等待时间（毫秒）
+- `WRITE_QUEUE_ENABLED`: 是否启用写入 FIFO 队列
+- `WRITE_QUEUE_MAX_SIZE`: 写入队列最大积压数
 - `ZONE_ACCESS_CODE_REQUIRED`: 是否启用访问码拦截
 - `ZONE_SESSION_TTL_MINUTES`: 客人会话有效期（分钟）
 - `ROTATE_ACCESS_CODE_ON_CHECKOUT`: 结单是否自动轮换访问码
