@@ -23,6 +23,10 @@ const bulkImportMsgEl = document.getElementById('bulkImportMsg');
 const zoneListEl = document.getElementById('zoneList');
 const zoneLabelInputEl = document.getElementById('zoneLabelInput');
 const addZoneBtnEl = document.getElementById('addZoneBtn');
+const reportDateInputEl = document.getElementById('reportDateInput');
+const loadReportBtnEl = document.getElementById('loadReportBtn');
+const reportSummaryEl = document.getElementById('reportSummary');
+const reportOrdersListEl = document.getElementById('reportOrdersList');
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -35,6 +39,10 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function money(value) {
+  return `$${Number(value || 0).toFixed(2)}`;
 }
 
 function renderMenuTable() {
@@ -547,6 +555,70 @@ async function checkoutZone(zoneId) {
   await loadZones();
 }
 
+function renderDailyReport(data) {
+  if (!data || !Array.isArray(data.orders)) {
+    reportSummaryEl.textContent = '查询失败。';
+    reportOrdersListEl.innerHTML = '';
+    return;
+  }
+
+  reportSummaryEl.textContent = `日期：${data.date} · 订单：${data.count} 单 · 总金额：${money(data.totalAmount)}`;
+
+  if (!data.orders.length) {
+    reportOrdersListEl.innerHTML = '<div class="muted">当天没有订单。</div>';
+    return;
+  }
+
+  reportOrdersListEl.innerHTML = data.orders
+    .map((order) => {
+      const itemsHtml = (order.items || [])
+        .map((item) => `<li>${escapeHtml(item.name)} x ${Number(item.quantity || 0)} (${money(item.subtotal)})</li>`)
+        .join('');
+      const sourceText = order.source === 'history' ? '历史' : '进行中';
+      const customerName = String(order.customerName || '').trim() || '未填写';
+      return `
+        <div class="qr-card">
+          <div class="row wrap" style="justify-content: space-between">
+            <strong>${escapeHtml(order.zoneLabel || '-')} · 订单 ${escapeHtml((order.id || '').slice(0, 8))}</strong>
+            <span class="small muted">${escapeHtml(sourceText)} · ${escapeHtml(order.status || '-')}</span>
+          </div>
+          <div class="small muted">时间：${new Date(order.createdAt).toLocaleString()}</div>
+          <div class="small muted">下单人：${escapeHtml(customerName)}</div>
+          <ul style="margin:8px 0">${itemsHtml}</ul>
+          <div><strong>合计：${money(order.total)}</strong></div>
+          <div class="small muted">备注：${escapeHtml(order.note || '无')}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+async function loadDailyReport() {
+  const date = String(reportDateInputEl?.value || '').trim();
+  if (!date) {
+    reportSummaryEl.textContent = '请先选择日期。';
+    return;
+  }
+
+  loadReportBtnEl.disabled = true;
+  reportSummaryEl.textContent = '查询中...';
+  try {
+    const tzOffsetMinutes = new Date().getTimezoneOffset();
+    const query = new URLSearchParams({ date, tzOffsetMinutes: String(tzOffsetMinutes) });
+    const res = await fetch(`/api/admin/orders/by-day?${query.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || '查询失败');
+    }
+    renderDailyReport(data);
+  } catch (error) {
+    reportSummaryEl.textContent = `查询失败：${error.message}`;
+    reportOrdersListEl.innerHTML = '';
+  } finally {
+    loadReportBtnEl.disabled = false;
+  }
+}
+
 menuTbodyEl.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-action="remove-menu"]');
   if (!button) return;
@@ -753,6 +825,12 @@ zoneListEl.addEventListener('click', async (event) => {
   }
 });
 
+if (loadReportBtnEl) {
+  loadReportBtnEl.addEventListener('click', async () => {
+    await loadDailyReport();
+  });
+}
+
 (async function init() {
   try {
     await loadCategories();
@@ -764,6 +842,10 @@ zoneListEl.addEventListener('click', async (event) => {
           // 静默失败，避免后台页面频闪
         });
       }, 3000);
+    }
+    if (reportDateInputEl) {
+      reportDateInputEl.value = new Date().toISOString().slice(0, 10);
+      await loadDailyReport();
     }
   } catch (error) {
     menuMsgEl.textContent = `初始化失败：${error.message}`;

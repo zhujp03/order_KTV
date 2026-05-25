@@ -714,6 +714,23 @@ hr.soft {
     linear-gradient(135deg, #070918 0%, #0a0f2a 45%, #06142a 100%);
 }
 
+html.user-page-root,
+body.user-page {
+  overscroll-behavior-x: none;
+}
+
+.user-page main,
+.user-page .app-shell {
+  touch-action: pan-y;
+}
+
+.user-page button,
+.user-page .cat-tab,
+.user-page .cart-fab,
+.user-page .menu-item-qty button {
+  touch-action: manipulation;
+}
+
 .user-page .user-hero {
   background: linear-gradient(120deg, rgba(11, 20, 43, 0.92), rgba(10, 74, 106, 0.78));
   border: 1px solid rgba(117, 158, 255, 0.28);

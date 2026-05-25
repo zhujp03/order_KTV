@@ -1952,6 +1952,57 @@ app.get('/api/admin/orders/history', (req, res) => {
   return res.json({ history, count: history.length });
 });
 
+app.get('/api/admin/orders/by-day', (req, res) => {
+  const dateText = sanitizeText(req.query.date, 20);
+  const tzOffsetRaw = Number(req.query.tzOffsetMinutes);
+  const tzOffsetMinutes = Number.isFinite(tzOffsetRaw) ? Math.trunc(tzOffsetRaw) : 0;
+  const m = String(dateText || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) {
+    return res.status(400).json({ error: 'Invalid date. Use YYYY-MM-DD.' });
+  }
+
+  const year = Number(m[1]);
+  const monthIdx = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  const startUtcMs = Date.UTC(year, monthIdx, day, 0, 0, 0, 0) + tzOffsetMinutes * 60 * 1000;
+  const endUtcMs = startUtcMs + 24 * 60 * 60 * 1000;
+
+  const all = [
+    ...getOrderWithItems({ history: false }).map((o) => ({ ...o, source: 'active' })),
+    ...getOrderWithItems({ history: true }).map((o) => ({ ...o, source: 'history' })),
+  ];
+
+  const orders = all
+    .filter((order) => {
+      const t = new Date(order.createdAt).getTime();
+      return Number.isFinite(t) && t >= startUtcMs && t < endUtcMs;
+    })
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const totalAmount = round2(orders.reduce((sum, order) => sum + Number(order.total || 0), 0));
+  const statusCount = {
+    new: 0,
+    preparing: 0,
+    ready: 0,
+    served: 0,
+    cancelled: 0,
+  };
+  for (const order of orders) {
+    if (Object.hasOwn(statusCount, order.status)) {
+      statusCount[order.status] += 1;
+    }
+  }
+
+  return res.json({
+    date: dateText,
+    tzOffsetMinutes,
+    count: orders.length,
+    totalAmount,
+    statusCount,
+    orders,
+  });
+});
+
 app.use('/api', (req, res) => {
   return res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
 });

@@ -58,6 +58,33 @@ const orderStatusText = {
   cancelled: 'Cancelled',
 };
 
+// Prevent mobile double-tap zoom on ordering interactions.
+let lastTouchEndTs = 0;
+document.addEventListener(
+  'touchend',
+  (event) => {
+    const target = event.target;
+    const tagName = target && target.tagName ? target.tagName.toUpperCase() : '';
+    if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastTouchEndTs <= 320) {
+      event.preventDefault();
+    }
+    lastTouchEndTs = now;
+  },
+  { passive: false },
+);
+
+// Prevent accidental browser back navigation on ordering page.
+if (window.history && typeof window.history.pushState === 'function') {
+  window.history.pushState({ locked: true }, '', window.location.href);
+  window.addEventListener('popstate', () => {
+    window.history.pushState({ locked: true }, '', window.location.href);
+  });
+}
+
 function money(value) {
   return `$${Number(value).toFixed(2)}`;
 }
