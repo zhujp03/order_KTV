@@ -27,6 +27,12 @@ const reportDateInputEl = document.getElementById('reportDateInput');
 const loadReportBtnEl = document.getElementById('loadReportBtn');
 const reportSummaryEl = document.getElementById('reportSummary');
 const reportOrdersListEl = document.getElementById('reportOrdersList');
+const employeeUsernameInputEl = document.getElementById('employeeUsernameInput');
+const employeePasswordInputEl = document.getElementById('employeePasswordInput');
+const addEmployeeBtnEl = document.getElementById('addEmployeeBtn');
+const employeeManageMsgEl = document.getElementById('employeeManageMsg');
+const employeeTbodyEl = document.getElementById('employeeTbody');
+let employeesState = [];
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -576,6 +582,7 @@ function renderDailyReport(data) {
         .join('');
       const sourceText = order.source === 'history' ? '历史' : '进行中';
       const customerName = String(order.customerName || '').trim() || '未填写';
+      const handledBy = String(order.handledByEmployeeUsername || '').trim() || '-';
       return `
         <div class="qr-card">
           <div class="row wrap" style="justify-content: space-between">
@@ -584,6 +591,7 @@ function renderDailyReport(data) {
           </div>
           <div class="small muted">时间：${new Date(order.createdAt).toLocaleString()}</div>
           <div class="small muted">下单人：${escapeHtml(customerName)}</div>
+          <div class="small muted">接单员工：${escapeHtml(handledBy)}</div>
           <ul style="margin:8px 0">${itemsHtml}</ul>
           <div><strong>合计：${money(order.total)}</strong></div>
           <div class="small muted">备注：${escapeHtml(order.note || '无')}</div>
@@ -617,6 +625,81 @@ async function loadDailyReport() {
   } finally {
     loadReportBtnEl.disabled = false;
   }
+}
+
+function renderEmployees() {
+  if (!employeeTbodyEl) return;
+  if (!employeesState.length) {
+    employeeTbodyEl.innerHTML = '<tr><td colspan="3" class="muted">暂无员工</td></tr>';
+    return;
+  }
+  employeeTbodyEl.innerHTML = employeesState
+    .map((emp) => `
+      <tr data-employee-id="${emp.id}">
+        <td><input data-field="username" value="${escapeHtml(emp.username || '')}" /></td>
+        <td><input data-field="password" type="password" placeholder="留空不修改密码" /></td>
+        <td>
+          <div class="row wrap">
+            <button class="secondary small" data-action="save-employee" data-id="${emp.id}" style="padding:6px 10px;">保存</button>
+            <button class="warn small" data-action="delete-employee" data-id="${emp.id}" style="padding:6px 10px;">删除</button>
+          </div>
+        </td>
+      </tr>
+    `)
+    .join('');
+}
+
+async function loadEmployees() {
+  const res = await fetch('/api/admin/employees');
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '员工加载失败');
+  employeesState = Array.isArray(data.employees) ? data.employees : [];
+  renderEmployees();
+}
+
+async function addEmployee() {
+  const username = String(employeeUsernameInputEl.value || '').trim();
+  const password = String(employeePasswordInputEl.value || '').trim();
+  if (!username || !password) {
+    throw new Error('请输入用户名和密码。');
+  }
+  const res = await fetch('/api/admin/employees', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '新增员工失败');
+  employeeUsernameInputEl.value = '';
+  employeePasswordInputEl.value = '';
+  employeesState = Array.isArray(data.employees) ? data.employees : employeesState;
+  renderEmployees();
+}
+
+async function saveEmployee(employeeId, username, password) {
+  const body = { username };
+  if (String(password || '').trim()) body.password = String(password).trim();
+  const res = await fetch(`/api/admin/employees/${encodeURIComponent(employeeId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '保存员工失败');
+  employeesState = Array.isArray(data.employees) ? data.employees : employeesState;
+  renderEmployees();
+}
+
+async function deleteEmployee(employeeId) {
+  const ok = confirm('确认删除该员工吗？该员工会被立即踢下线。');
+  if (!ok) return;
+  const res = await fetch(`/api/admin/employees/${encodeURIComponent(employeeId)}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '删除员工失败');
+  employeesState = Array.isArray(data.employees) ? data.employees : employeesState;
+  renderEmployees();
 }
 
 menuTbodyEl.addEventListener('click', (event) => {
@@ -831,11 +914,49 @@ if (loadReportBtnEl) {
   });
 }
 
+if (addEmployeeBtnEl) {
+  addEmployeeBtnEl.addEventListener('click', async () => {
+    try {
+      employeeManageMsgEl.textContent = '保存中...';
+      await addEmployee();
+      employeeManageMsgEl.textContent = `已保存，共 ${employeesState.length} 个员工。`;
+    } catch (error) {
+      employeeManageMsgEl.textContent = `操作失败：${error.message}`;
+    }
+  });
+}
+
+if (employeeTbodyEl) {
+  employeeTbodyEl.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const employeeId = button.dataset.id;
+    const action = button.dataset.action;
+    const row = button.closest('tr[data-employee-id]');
+    const usernameInput = row?.querySelector('input[data-field="username"]');
+    const passwordInput = row?.querySelector('input[data-field="password"]');
+
+    try {
+      employeeManageMsgEl.textContent = '保存中...';
+      if (action === 'save-employee') {
+        await saveEmployee(employeeId, usernameInput?.value || '', passwordInput?.value || '');
+        if (passwordInput) passwordInput.value = '';
+      } else if (action === 'delete-employee') {
+        await deleteEmployee(employeeId);
+      }
+      employeeManageMsgEl.textContent = `已保存，共 ${employeesState.length} 个员工。`;
+    } catch (error) {
+      employeeManageMsgEl.textContent = `操作失败：${error.message}`;
+    }
+  });
+}
+
 (async function init() {
   try {
     await loadCategories();
     await loadMenu();
     await loadZones();
+    await loadEmployees();
     if (!zonesRefreshTimer) {
       zonesRefreshTimer = setInterval(() => {
         loadZones().catch(() => {

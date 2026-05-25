@@ -4,6 +4,13 @@ const statusFilterEl = document.getElementById('statusFilter');
 const refreshBtnEl = document.getElementById('refreshBtn');
 const lastUpdatedEl = document.getElementById('lastUpdated');
 const soundToggleBtnEl = document.getElementById('soundToggleBtn');
+const employeeLoginCardEl = document.getElementById('employeeLoginCard');
+const employeeUsernameInputEl = document.getElementById('employeeUsernameInput');
+const employeePasswordInputEl = document.getElementById('employeePasswordInput');
+const employeeLoginBtnEl = document.getElementById('employeeLoginBtn');
+const employeeLoginMsgEl = document.getElementById('employeeLoginMsg');
+const currentEmployeeLabelEl = document.getElementById('currentEmployeeLabel');
+const employeeLogoutBtnEl = document.getElementById('employeeLogoutBtn');
 const zoneSessionDrawerEl = document.getElementById('zoneSessionDrawer');
 const zoneSessionDrawerBackdropEl = document.getElementById('zoneSessionDrawerBackdrop');
 const zoneSessionTitleEl = document.getElementById('zoneSessionTitle');
@@ -26,7 +33,45 @@ const adminState = {
   soundEnabled: false,
   audioCtx: null,
   lastNewCount: null,
+  employeeToken: localStorage.getItem('employee_session_token') || '',
+  employeeUsername: localStorage.getItem('employee_session_username') || '',
 };
+
+function getEmployeeAuthHeaders() {
+  if (!adminState.employeeToken) return {};
+  return { 'X-Employee-Session': adminState.employeeToken };
+}
+
+async function employeeApiFetch(url, options = {}) {
+  const merged = {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...getEmployeeAuthHeaders(),
+    },
+  };
+  const res = await fetch(url, merged);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.requiresEmployeeLogin = data.requiresEmployeeLogin === true;
+    throw err;
+  }
+  return data;
+}
+
+function updateEmployeeUiState() {
+  const loggedIn = Boolean(adminState.employeeToken && adminState.employeeUsername);
+  employeeLoginCardEl.hidden = loggedIn;
+  currentEmployeeLabelEl.textContent = loggedIn
+    ? `当前员工：${adminState.employeeUsername}`
+    : '当前员工：未登录';
+  employeeLogoutBtnEl.hidden = !loggedIn;
+  if (!loggedIn) {
+    ordersWrapEl.innerHTML = '<div class="card muted">请先员工登录。</div>';
+    zoneTodoWrapEl.innerHTML = '<div class="muted">请先员工登录。</div>';
+  }
+}
 
 function formatTime(iso) {
   const d = new Date(iso);
@@ -60,6 +105,7 @@ function renderOrders(orders) {
             <span class="badge ${statusClass}">${statusText[order.status] || order.status}</span>
           </div>
           <div class="small muted">下单人：${order.customerName || 'Guest'}</div>
+          <div class="small muted">接单员工：${order.handledByEmployeeUsername || '-'}</div>
           <div class="small muted">订单 ${order.id.slice(0, 8)} · ${formatTime(order.createdAt)}</div>
           <ul>${items}</ul>
           <div><strong>合计 ${currency(order.total)}</strong></div>
@@ -100,15 +146,11 @@ function renderZones(zones) {
 }
 
 async function updateOrderStatus(orderId, status) {
-  const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
+  await employeeApiFetch(`/api/employee/orders/${encodeURIComponent(orderId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '更新失败');
-  }
 }
 
 async function updateZoneCompleted(zoneId, completed) {
@@ -124,8 +166,9 @@ async function updateZoneCompleted(zoneId, completed) {
 }
 
 async function checkoutZone(zoneId) {
-  const res = await fetch(`/api/admin/zones/${encodeURIComponent(zoneId)}/checkout`, {
+  const res = await fetch(`/api/employee/zones/${encodeURIComponent(zoneId)}/checkout`, {
     method: 'POST',
+    headers: getEmployeeAuthHeaders(),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -138,32 +181,20 @@ async function loadOrders() {
   const status = statusFilterEl.value;
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
 
-  const res = await fetch(`/api/admin/orders${query}`);
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '订单加载失败');
-  }
+  const data = await employeeApiFetch(`/api/employee/orders${query}`);
 
   renderOrders(Array.isArray(data.orders) ? data.orders : []);
 }
 
 async function loadZones() {
-  const res = await fetch('/api/admin/zones');
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '桌号加载失败');
-  }
+  const data = await employeeApiFetch('/api/employee/zones');
 
   adminState.zones = Array.isArray(data.zones) ? data.zones : [];
   renderZones(adminState.zones);
 }
 
 async function fetchAllActiveOrders() {
-  const res = await fetch('/api/admin/orders');
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '订单加载失败');
-  }
+  const data = await employeeApiFetch('/api/employee/orders');
   return Array.isArray(data.orders) ? data.orders : [];
 }
 
@@ -206,11 +237,7 @@ function playNewOrderBeep() {
 }
 
 async function checkNewOrderAlert() {
-  const res = await fetch('/api/admin/orders?status=new');
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '新单检测失败');
-  }
+  const data = await employeeApiFetch('/api/employee/orders?status=new');
   const count = Array.isArray(data.orders) ? data.orders.length : 0;
 
   if (adminState.lastNewCount === null) {
@@ -319,14 +346,71 @@ async function refreshZoneSessionDrawer() {
 }
 
 async function loadAll() {
+  if (!adminState.employeeToken) {
+    updateEmployeeUiState();
+    return;
+  }
   try {
     await Promise.all([loadOrders(), loadZones()]);
     await checkNewOrderAlert();
     await refreshZoneSessionDrawer();
     lastUpdatedEl.textContent = `最近刷新: ${new Date().toLocaleTimeString()}`;
   } catch (error) {
+    if (error.requiresEmployeeLogin) {
+      adminState.employeeToken = '';
+      adminState.employeeUsername = '';
+      localStorage.removeItem('employee_session_token');
+      localStorage.removeItem('employee_session_username');
+      updateEmployeeUiState();
+      return;
+    }
     ordersWrapEl.innerHTML = `<div class="card">加载失败：${error.message}</div>`;
   }
+}
+
+async function employeeLogin() {
+  const username = String(employeeUsernameInputEl.value || '').trim();
+  const password = String(employeePasswordInputEl.value || '').trim();
+  if (!username || !password) {
+    employeeLoginMsgEl.textContent = '请输入用户名和密码。';
+    return;
+  }
+  employeeLoginBtnEl.disabled = true;
+  employeeLoginMsgEl.textContent = '登录中...';
+  try {
+    const data = await employeeApiFetch('/api/employee/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    adminState.employeeToken = data.token || '';
+    adminState.employeeUsername = data.employee?.username || username;
+    localStorage.setItem('employee_session_token', adminState.employeeToken);
+    localStorage.setItem('employee_session_username', adminState.employeeUsername);
+    employeePasswordInputEl.value = '';
+    employeeLoginMsgEl.textContent = '登录成功。';
+    updateEmployeeUiState();
+    await loadAll();
+  } catch (error) {
+    employeeLoginMsgEl.textContent = `登录失败：${error.message}`;
+  } finally {
+    employeeLoginBtnEl.disabled = false;
+  }
+}
+
+async function employeeLogout() {
+  try {
+    if (adminState.employeeToken) {
+      await employeeApiFetch('/api/employee/auth/logout', { method: 'POST' });
+    }
+  } catch {
+    // ignore
+  }
+  adminState.employeeToken = '';
+  adminState.employeeUsername = '';
+  localStorage.removeItem('employee_session_token');
+  localStorage.removeItem('employee_session_username');
+  updateEmployeeUiState();
 }
 
 ordersWrapEl.addEventListener('click', async (event) => {
@@ -408,5 +492,29 @@ soundToggleBtnEl.addEventListener('click', async () => {
 });
 
 updateSoundButton();
-loadAll();
+employeeLoginBtnEl.addEventListener('click', employeeLogin);
+employeePasswordInputEl.addEventListener('keydown', async (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    await employeeLogin();
+  }
+});
+employeeLogoutBtnEl.addEventListener('click', employeeLogout);
+
+updateEmployeeUiState();
+(async () => {
+  if (adminState.employeeToken) {
+    try {
+      const data = await employeeApiFetch('/api/employee/auth/me');
+      adminState.employeeUsername = data.employee?.username || adminState.employeeUsername;
+      localStorage.setItem('employee_session_username', adminState.employeeUsername);
+      updateEmployeeUiState();
+      await loadAll();
+    } catch {
+      await employeeLogout();
+    }
+  } else {
+    updateEmployeeUiState();
+  }
+})();
 setInterval(loadAll, 5000);

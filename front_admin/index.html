@@ -13,9 +13,20 @@
         <p>按照桌号/包厢实时接收订单，支持状态流转（新单 -> 制作中 -> 待上桌 -> 已完成）。</p>
       </section>
 
+      <section id="employeeLoginCard" class="card" style="margin-top: 14px">
+        <h2>员工登录</h2>
+        <div class="row wrap" style="margin-top: 8px">
+          <input id="employeeUsernameInput" placeholder="用户名" style="max-width: 220px" />
+          <input id="employeePasswordInput" type="password" placeholder="密码" style="max-width: 220px" />
+          <button id="employeeLoginBtn" class="secondary">登录</button>
+        </div>
+        <p id="employeeLoginMsg" class="small muted" style="margin-bottom: 0"></p>
+      </section>
+
       <section class="card" style="margin-top: 18px">
         <div class="row wrap" style="justify-content: space-between">
           <div class="row wrap">
+            <span id="currentEmployeeLabel" class="small muted">当前员工：未登录</span>
             <label for="statusFilter" class="small muted">状态筛选</label>
             <select id="statusFilter" style="width: 170px">
               <option value="">全部</option>
@@ -27,6 +38,7 @@
             </select>
           </div>
           <div class="row wrap">
+            <button class="light" id="employeeLogoutBtn">退出登录</button>
             <button class="light" id="soundToggleBtn">Sound Off</button>
             <button class="light" id="refreshBtn">立即刷新</button>
             <span id="lastUpdated" class="small muted">未刷新</span>

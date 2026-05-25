@@ -80,6 +80,26 @@
       </section>
 
       <section class="card" style="margin-top: 16px">
+        <h3>员工账号管理</h3>
+        <div class="row wrap" style="margin-top: 8px">
+          <input id="employeeUsernameInput" placeholder="员工用户名" style="max-width: 220px" />
+          <input id="employeePasswordInput" type="password" placeholder="员工密码" style="max-width: 220px" />
+          <button id="addEmployeeBtn" class="secondary">新增员工</button>
+          <span id="employeeManageMsg" class="small muted"></span>
+        </div>
+        <table class="table" style="margin-top: 8px">
+          <thead>
+            <tr>
+              <th>用户名</th>
+              <th>新密码（留空不改）</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="employeeTbody"></tbody>
+        </table>
+      </section>
+
+      <section class="card" style="margin-top: 16px">
         <h3>反追踪 / 隐私默认策略（雏形版）</h3>
         <div class="notice small">
           系统默认不接入第三方统计、不加载第三方字体脚本、不记录设备指纹；订单只关联“二维码 token + 桌号/包厢标签”，用于本地内网与 AWS 公网一致部署。

@@ -54,6 +54,8 @@ const ZONE_ACCESS_CODE_LENGTH = envInt('ZONE_ACCESS_CODE_LENGTH', 4, 4, 8);
 const ZONE_SESSION_TTL_MINUTES = envInt('ZONE_SESSION_TTL_MINUTES', 120, 5, 1440);
 const ROTATE_ACCESS_CODE_ON_CHECKOUT = process.env.ROTATE_ACCESS_CODE_ON_CHECKOUT !== 'false';
 const SESSION_HEADER_NAME = 'x-zone-session';
+const EMPLOYEE_SESSION_HEADER_NAME = 'x-employee-session';
+const EMPLOYEE_SESSION_TTL_MINUTES = envInt('EMPLOYEE_SESSION_TTL_MINUTES', 720, 30, 10080);
 const CSP_ALLOW_INLINE_STYLE = process.env.CSP_ALLOW_INLINE_STYLE !== 'false';
 
 const ORDER_STATUSES = ['new', 'preparing', 'ready', 'served', 'cancelled'];
@@ -312,6 +314,26 @@ CREATE TABLE IF NOT EXISTS zone_sessions (
   FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS employees (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS employee_sessions (
+  id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  session_token TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_zones_token ON zones(token);
 CREATE INDEX IF NOT EXISTS idx_orders_zone_id ON orders(zone_id);
 CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
@@ -321,6 +343,8 @@ CREATE INDEX IF NOT EXISTS idx_order_history_created_at ON order_history(created
 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
 CREATE INDEX IF NOT EXISTS idx_zone_sessions_zone_id ON zone_sessions(zone_id);
 CREATE INDEX IF NOT EXISTS idx_zone_sessions_token ON zone_sessions(session_token);
+CREATE INDEX IF NOT EXISTS idx_employee_sessions_employee_id ON employee_sessions(employee_id);
+CREATE INDEX IF NOT EXISTS idx_employee_sessions_token ON employee_sessions(session_token);
 `);
 
 function hasColumn(tableName, columnName) {
@@ -348,6 +372,18 @@ if (!hasColumn('order_history', 'customer_name')) {
 }
 if (!hasColumn('zone_sessions', 'customer_name')) {
   db.exec("ALTER TABLE zone_sessions ADD COLUMN customer_name TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('orders', 'handled_by_employee_id')) {
+  db.exec("ALTER TABLE orders ADD COLUMN handled_by_employee_id TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('orders', 'handled_by_employee_username')) {
+  db.exec("ALTER TABLE orders ADD COLUMN handled_by_employee_username TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('order_history', 'handled_by_employee_id')) {
+  db.exec("ALTER TABLE order_history ADD COLUMN handled_by_employee_id TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('order_history', 'handled_by_employee_username')) {
+  db.exec("ALTER TABLE order_history ADD COLUMN handled_by_employee_username TEXT NOT NULL DEFAULT ''");
 }
 
 function getSetting(key) {
@@ -558,6 +594,101 @@ function touchZoneSession(sessionId) {
   return expiresAt;
 }
 
+function hashEmployeePassword(password) {
+  const value = sanitizeText(password, 200);
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function ensureDefaultEmployee() {
+  const countRow = db.prepare('SELECT COUNT(*) AS count FROM employees').get();
+  if (Number(countRow?.count || 0) > 0) return;
+  const now = nowIso();
+  db.prepare(`
+    INSERT INTO employees(id, username, password_hash, active, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?)
+  `).run(createId(), 'staff', hashEmployeePassword('123456'), now, now);
+  console.log('[employee] default account created: staff / 123456 (please change in admin_manage)');
+}
+
+function getActiveEmployees() {
+  return db
+    .prepare('SELECT id, username, active, created_at, updated_at FROM employees ORDER BY datetime(created_at) ASC')
+    .all()
+    .map((row) => ({
+      id: row.id,
+      username: row.username,
+      active: row.active === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+}
+
+function createEmployeeSession(employeeId) {
+  const now = nowIso();
+  const expiresAt = minutesFromNow(EMPLOYEE_SESSION_TTL_MINUTES);
+  const token = createSessionToken();
+  db.prepare(`
+    INSERT INTO employee_sessions(id, employee_id, session_token, created_at, last_seen_at, expires_at, revoked_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL)
+  `).run(createId(), employeeId, token, now, now, expiresAt);
+  return { token, expiresAt };
+}
+
+function verifyEmployeeSession(token) {
+  const value = sanitizeText(token, 120);
+  if (!value) return { ok: false, reason: 'missing' };
+  const row = db.prepare(`
+    SELECT
+      s.id, s.employee_id, s.session_token, s.expires_at, s.revoked_at,
+      e.username, e.active
+    FROM employee_sessions s
+    JOIN employees e ON e.id = s.employee_id
+    WHERE s.session_token = ?
+    LIMIT 1
+  `).get(value);
+  if (!row) return { ok: false, reason: 'not_found' };
+  if (row.revoked_at) return { ok: false, reason: 'revoked' };
+  if (row.active !== 1) return { ok: false, reason: 'employee_inactive' };
+  if (new Date(row.expires_at).getTime() <= Date.now()) return { ok: false, reason: 'expired' };
+  return { ok: true, session: row };
+}
+
+function touchEmployeeSession(sessionId) {
+  const touchedAt = nowIso();
+  const expiresAt = minutesFromNow(EMPLOYEE_SESSION_TTL_MINUTES);
+  db.prepare('UPDATE employee_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?')
+    .run(touchedAt, expiresAt, sessionId);
+  return expiresAt;
+}
+
+function revokeEmployeeSession(token) {
+  const value = sanitizeText(token, 120);
+  if (!value) return;
+  db.prepare('UPDATE employee_sessions SET revoked_at = ? WHERE session_token = ? AND revoked_at IS NULL')
+    .run(nowIso(), value);
+}
+
+function revokeEmployeeSessionsByEmployee(employeeId) {
+  db.prepare('UPDATE employee_sessions SET revoked_at = ? WHERE employee_id = ? AND revoked_at IS NULL')
+    .run(nowIso(), employeeId);
+}
+
+function requireEmployeeAuth(req, res, next) {
+  const token = sanitizeText(req.get(EMPLOYEE_SESSION_HEADER_NAME) || '', 120);
+  const verified = verifyEmployeeSession(token);
+  if (!verified.ok) {
+    return res.status(401).json({ error: '请先员工登录。', requiresEmployeeLogin: true });
+  }
+  const expiresAt = touchEmployeeSession(verified.session.id);
+  req.employee = {
+    id: verified.session.employee_id,
+    username: verified.session.username,
+    token: verified.session.session_token,
+    expiresAt,
+  };
+  return next();
+}
+
 function validateZoneAccessCode(zone, accessCode) {
   const code = sanitizeText(accessCode, 20);
   const expected = sanitizeText(zone?.access_code, 20);
@@ -578,8 +709,9 @@ const archiveAndClearZoneOrdersTx = db.transaction((zoneId, checkoutAt) => {
     db.prepare(`
       INSERT OR REPLACE INTO order_history(
         id, zone_id, zone_label, zone_token, customer_name, note, total, status,
-        created_at, updated_at, archived_at, checkout_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, archived_at, checkout_at,
+        handled_by_employee_id, handled_by_employee_username
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       order.id,
       order.zone_id,
@@ -593,6 +725,8 @@ const archiveAndClearZoneOrdersTx = db.transaction((zoneId, checkoutAt) => {
       order.updated_at,
       archivedAt,
       checkoutAt || null,
+      sanitizeText(order.handled_by_employee_id || '', 120),
+      sanitizeText(order.handled_by_employee_username || '', 60),
     );
 
     const insertHistoryItemStmt = db.prepare(`
@@ -726,6 +860,8 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
     note: order.note || '',
     total: calculateOrderGrandTotal(items),
     status: order.status,
+    handledByEmployeeId: sanitizeText(order.handled_by_employee_id || '', 120),
+    handledByEmployeeUsername: sanitizeText(order.handled_by_employee_username || '', 60),
     createdAt: order.created_at,
     updatedAt: order.updated_at,
     archivedAt: history ? order.archived_at : undefined,
@@ -1022,6 +1158,7 @@ function backfillSortIndexes() {
 
 maybeMigrateFromLegacyJson();
 seedDefaultsIfNeeded();
+ensureDefaultEmployee();
 backfillCategoriesFromMenu();
 backfillZoneAccessCodes();
 // Do not auto-run backfillSortIndexes on every startup.
@@ -1912,7 +2049,149 @@ app.get('/api/admin/zones/:id/qrcode', async (req, res) => {
   }
 });
 
-app.get('/api/admin/orders', (req, res) => {
+app.get('/api/admin/employees', (req, res) => {
+  return res.json({ employees: getActiveEmployees() });
+});
+
+app.post('/api/admin/employees', (req, res) => {
+  const username = sanitizeText(req.body?.username, 40);
+  const password = sanitizeText(req.body?.password, 120);
+  if (!username || !password) {
+    return res.status(400).json({ error: 'username and password are required.' });
+  }
+  const existing = db.prepare('SELECT id FROM employees WHERE username = ?').get(username);
+  if (existing) {
+    return res.status(409).json({ error: 'username already exists.' });
+  }
+  const now = nowIso();
+  db.prepare(`
+    INSERT INTO employees(id, username, password_hash, active, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?)
+  `).run(createId(), username, hashEmployeePassword(password), now, now);
+  return res.status(201).json({ ok: true, employees: getActiveEmployees() });
+});
+
+app.patch('/api/admin/employees/:id', (req, res) => {
+  const employeeId = sanitizeText(req.params.id, 120);
+  const username = sanitizeText(req.body?.username, 40);
+  const password = sanitizeText(req.body?.password, 120);
+  const employee = db.prepare('SELECT id, username FROM employees WHERE id = ?').get(employeeId);
+  if (!employee) {
+    return res.status(404).json({ error: 'employee not found.' });
+  }
+  if (!username) {
+    return res.status(400).json({ error: 'username cannot be empty.' });
+  }
+  const duplicate = db.prepare('SELECT id FROM employees WHERE username = ? AND id != ?').get(username, employeeId);
+  if (duplicate) {
+    return res.status(409).json({ error: 'username already exists.' });
+  }
+  if (password) {
+    db.prepare('UPDATE employees SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?')
+      .run(username, hashEmployeePassword(password), nowIso(), employeeId);
+  } else {
+    db.prepare('UPDATE employees SET username = ?, updated_at = ? WHERE id = ?')
+      .run(username, nowIso(), employeeId);
+  }
+  return res.json({ ok: true, employees: getActiveEmployees() });
+});
+
+app.delete('/api/admin/employees/:id', (req, res) => {
+  const employeeId = sanitizeText(req.params.id, 120);
+  const employee = db.prepare('SELECT id FROM employees WHERE id = ?').get(employeeId);
+  if (!employee) {
+    return res.status(404).json({ error: 'employee not found.' });
+  }
+  db.transaction(() => {
+    revokeEmployeeSessionsByEmployee(employeeId);
+    db.prepare('DELETE FROM employees WHERE id = ?').run(employeeId);
+  })();
+  ensureDefaultEmployee();
+  return res.json({ ok: true, employees: getActiveEmployees() });
+});
+
+app.post('/api/employee/auth/login', (req, res) => {
+  const username = sanitizeText(req.body?.username, 40);
+  const password = sanitizeText(req.body?.password, 120);
+  if (!username || !password) {
+    return res.status(400).json({ error: '请输入用户名和密码。' });
+  }
+  const employee = db.prepare('SELECT id, username, password_hash, active FROM employees WHERE username = ?').get(username);
+  if (!employee || employee.active !== 1) {
+    return res.status(401).json({ error: '账号或密码错误。' });
+  }
+  if (employee.password_hash !== hashEmployeePassword(password)) {
+    return res.status(401).json({ error: '账号或密码错误。' });
+  }
+  const session = createEmployeeSession(employee.id);
+  return res.json({
+    ok: true,
+    token: session.token,
+    expiresAt: session.expiresAt,
+    employee: { id: employee.id, username: employee.username },
+  });
+});
+
+app.post('/api/employee/auth/logout', requireEmployeeAuth, (req, res) => {
+  revokeEmployeeSession(req.employee.token);
+  return res.json({ ok: true });
+});
+
+app.get('/api/employee/auth/me', requireEmployeeAuth, (req, res) => {
+  return res.json({
+    ok: true,
+    employee: { id: req.employee.id, username: req.employee.username },
+    expiresAt: req.employee.expiresAt,
+  });
+});
+
+app.get('/api/employee/orders', requireEmployeeAuth, (req, res) => {
+  const status = sanitizeText(req.query.status, 40);
+  if (status && !ORDER_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `Invalid status: ${status}` });
+  }
+  return res.json({
+    orders: getOrderWithItems({ history: false, status }),
+    statuses: ORDER_STATUSES,
+  });
+});
+
+app.patch('/api/employee/orders/:id', requireEmployeeAuth, (req, res) => {
+  const orderId = sanitizeText(req.params.id, 100);
+  const status = sanitizeText(req.body?.status, 40);
+  if (!ORDER_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `Invalid status: ${status}` });
+  }
+  const result = patchOrderStatus(orderId, status, req.employee);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  return res.json({ ok: true, order: result.order });
+});
+
+app.get('/api/employee/zones', requireEmployeeAuth, (req, res) => {
+  const baseUrl = resolveBaseUrl(req);
+  return res.json({ zones: getZoneList(baseUrl) });
+});
+
+app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return res.status(404).json({ error: 'Zone not found.' });
+  }
+  const checkoutAt = nowIso();
+  const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
+  clearZoneCart(zoneId);
+  setZoneCompleted(zoneId, false);
+  revokeZoneSessions(zoneId);
+  if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
+    rotateZoneAccessCode(zoneId);
+  }
+  return res.json({ ok: true, clearedOrders });
+});
+
+app.get('/api/admin/orders', requireEmployeeAuth, (req, res) => {
   const status = sanitizeText(req.query.status, 40);
   if (status && !ORDER_STATUSES.includes(status)) {
     return res.status(400).json({ error: `Invalid status: ${status}` });
@@ -1924,7 +2203,25 @@ app.get('/api/admin/orders', (req, res) => {
   });
 });
 
-app.patch('/api/admin/orders/:id', (req, res) => {
+function patchOrderStatus(orderId, status, actor = null) {
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
+  if (!order) {
+    return { ok: false, statusCode: 404, error: 'Order not found.' };
+  }
+  if (actor?.id && actor?.username) {
+    db.prepare(`
+      UPDATE orders
+      SET status = ?, updated_at = ?, handled_by_employee_id = ?, handled_by_employee_username = ?
+      WHERE id = ?
+    `).run(status, nowIso(), actor.id, actor.username, orderId);
+  } else {
+    db.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?').run(status, nowIso(), orderId);
+  }
+  const updatedOrder = getOrderWithItems({ history: false }).find((o) => o.id === orderId);
+  return { ok: true, order: updatedOrder };
+}
+
+app.patch('/api/admin/orders/:id', requireEmployeeAuth, (req, res) => {
   const orderId = sanitizeText(req.params.id, 100);
   const status = sanitizeText(req.body?.status, 40);
 
@@ -1932,15 +2229,11 @@ app.patch('/api/admin/orders/:id', (req, res) => {
     return res.status(400).json({ error: `Invalid status: ${status}` });
   }
 
-  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(orderId);
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found.' });
+  const result = patchOrderStatus(orderId, status, req.employee || null);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
   }
-
-  db.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?').run(status, nowIso(), orderId);
-  const updatedOrder = getOrderWithItems({ history: false }).find((o) => o.id === orderId);
-
-  return res.json({ ok: true, order: updatedOrder });
+  return res.json({ ok: true, order: result.order });
 });
 
 app.get('/api/admin/orders/history', (req, res) => {
