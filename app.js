@@ -439,6 +439,18 @@ CREATE TABLE IF NOT EXISTS employee_sessions (
   FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS zone_customer_settlements (
+  zone_id TEXT NOT NULL,
+  customer_name TEXT NOT NULL,
+  period_start_at TEXT NOT NULL,
+  settled INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  updated_by_employee_id TEXT NOT NULL DEFAULT '',
+  updated_by_employee_username TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(zone_id, customer_name, period_start_at),
+  FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_zones_token ON zones(token);
 CREATE INDEX IF NOT EXISTS idx_orders_zone_id ON orders(zone_id);
 CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
@@ -451,6 +463,7 @@ CREATE INDEX IF NOT EXISTS idx_zone_sessions_token ON zone_sessions(session_toke
 CREATE INDEX IF NOT EXISTS idx_session_carts_zone_id ON session_carts(zone_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_employee_id ON employee_sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_token ON employee_sessions(session_token);
+CREATE INDEX IF NOT EXISTS idx_zone_customer_settlements_zone_period ON zone_customer_settlements(zone_id, period_start_at);
 `);
 
 function hasColumn(tableName, columnName) {
@@ -694,6 +707,63 @@ function getZoneByToken(token) {
 
 function getZoneById(zoneId) {
   return db.prepare('SELECT * FROM zones WHERE id = ?').get(zoneId);
+}
+
+function getZonePeriodStartAt(zone) {
+  if (!zone) return nowIso();
+  return zone.access_code_updated_at || zone.created_at || nowIso();
+}
+
+function getZoneCustomerSettlements(zoneId, periodStartAt) {
+  const rows = db.prepare(`
+    SELECT customer_name, settled, updated_at, updated_by_employee_id, updated_by_employee_username
+    FROM zone_customer_settlements
+    WHERE zone_id = ? AND period_start_at = ?
+  `).all(zoneId, periodStartAt);
+
+  const byCustomer = {};
+  for (const row of rows) {
+    const key = sanitizeText(row.customer_name || '', 40);
+    if (!key) continue;
+    byCustomer[key] = {
+      settled: row.settled === 1,
+      updatedAt: row.updated_at || '',
+      updatedByEmployeeId: sanitizeText(row.updated_by_employee_id || '', 120),
+      updatedByEmployeeUsername: sanitizeText(row.updated_by_employee_username || '', 60),
+    };
+  }
+  return byCustomer;
+}
+
+function setZoneCustomerSettlement({ zoneId, periodStartAt, customerName, settled, employee = null }) {
+  const safeCustomerName = sanitizeText(customerName, 40);
+  if (!safeCustomerName) {
+    return { ok: false, error: 'customer_name_required' };
+  }
+  const now = nowIso();
+  db.prepare(`
+    INSERT INTO zone_customer_settlements(
+      zone_id, customer_name, period_start_at, settled, updated_at, updated_by_employee_id, updated_by_employee_username
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(zone_id, customer_name, period_start_at) DO UPDATE SET
+      settled = excluded.settled,
+      updated_at = excluded.updated_at,
+      updated_by_employee_id = excluded.updated_by_employee_id,
+      updated_by_employee_username = excluded.updated_by_employee_username
+  `).run(
+    zoneId,
+    safeCustomerName,
+    periodStartAt,
+    settled ? 1 : 0,
+    now,
+    sanitizeText(employee?.id || '', 120),
+    sanitizeText(employee?.username || '', 60),
+  );
+  return { ok: true };
+}
+
+function clearZoneCustomerSettlements(zoneId) {
+  db.prepare('DELETE FROM zone_customer_settlements WHERE zone_id = ?').run(zoneId);
 }
 
 function setZoneCompleted(zoneId, completed) {
@@ -2155,6 +2225,7 @@ app.post('/api/admin/zones/:id/regenerate', (req, res) => {
 
   const nextToken = createToken();
   revokeZoneSessions(zoneId);
+  clearZoneCustomerSettlements(zoneId);
   const nextCode = createAccessCode();
   const codeUpdatedAt = nowIso();
   db.prepare('UPDATE zones SET token = ?, access_code = ?, access_code_updated_at = ? WHERE id = ?')
@@ -2212,6 +2283,7 @@ app.post('/api/admin/zones/:id/checkout', (req, res) => {
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
   clearAllZoneCarts(zoneId);
+  clearZoneCustomerSettlements(zoneId);
   setZoneCompleted(zoneId, false);
   revokeZoneSessions(zoneId);
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
@@ -2243,6 +2315,7 @@ app.post('/api/admin/zones/:id/access-code/rotate', (req, res) => {
   }
 
   const rotated = rotateZoneAccessCode(zoneId);
+  clearZoneCustomerSettlements(zoneId);
   revokeZoneSessions(zoneId);
   const updated = getZoneById(zoneId);
   return res.json({
@@ -2269,6 +2342,7 @@ app.delete('/api/admin/zones/:id', (req, res) => {
 
   archiveAndClearZoneOrdersTx(zoneId, nowIso());
   clearAllZoneCarts(zoneId);
+  clearZoneCustomerSettlements(zoneId);
   revokeZoneSessions(zoneId);
   db.prepare('DELETE FROM zones WHERE id = ?').run(zoneId);
 
@@ -2441,6 +2515,43 @@ app.get('/api/employee/zones', requireEmployeeAuth, (req, res) => {
   return res.json({ zones: getZoneList(baseUrl) });
 });
 
+app.get('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return res.status(404).json({ error: 'Zone not found.' });
+  }
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const settlements = getZoneCustomerSettlements(zoneId, periodStartAt);
+  return res.json({ zoneId, periodStartAt, settlements });
+});
+
+app.patch('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return res.status(404).json({ error: 'Zone not found.' });
+  }
+  const customerName = sanitizeText(req.body?.customerName, 40);
+  const settled = req.body?.settled === true;
+  if (!customerName) {
+    return res.status(400).json({ error: 'customerName is required.' });
+  }
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const result = setZoneCustomerSettlement({
+    zoneId,
+    periodStartAt,
+    customerName,
+    settled,
+    employee: req.employee || null,
+  });
+  if (!result.ok) {
+    return res.status(400).json({ error: 'Invalid customer settlement data.' });
+  }
+  const settlements = getZoneCustomerSettlements(zoneId, periodStartAt);
+  return res.json({ ok: true, zoneId, periodStartAt, settlements });
+});
+
 app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => {
   const zoneId = sanitizeText(req.params.id, 100);
   const zone = getZoneById(zoneId);
@@ -2450,6 +2561,7 @@ app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => 
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
   clearAllZoneCarts(zoneId);
+  clearZoneCustomerSettlements(zoneId);
   setZoneCompleted(zoneId, false);
   revokeZoneSessions(zoneId);
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {

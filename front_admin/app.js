@@ -37,6 +37,7 @@ const adminState = {
   employeeToken: localStorage.getItem('employee_session_token') || '',
   employeeUsername: localStorage.getItem('employee_session_username') || '',
   writeQueue: null,
+  zoneCustomerSettlements: {},
 };
 
 function getEmployeeAuthHeaders() {
@@ -82,6 +83,10 @@ function formatTime(iso) {
 
 function currency(value) {
   return `$${Number(value).toFixed(2)}`;
+}
+
+function encodeAttr(value) {
+  return encodeURIComponent(String(value || ''));
 }
 
 function renderOrders(orders) {
@@ -190,6 +195,20 @@ async function checkoutZone(zoneId) {
   return data;
 }
 
+async function fetchZoneCustomerSettlements(zoneId) {
+  const data = await employeeApiFetch(`/api/employee/zones/${encodeURIComponent(zoneId)}/customer-settlements`);
+  return data?.settlements && typeof data.settlements === 'object' ? data.settlements : {};
+}
+
+async function setCustomerSettlement(zoneId, customerName, settled) {
+  const data = await employeeApiFetch(`/api/employee/zones/${encodeURIComponent(zoneId)}/customer-settlements`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customerName, settled }),
+  });
+  return data?.settlements && typeof data.settlements === 'object' ? data.settlements : {};
+}
+
 async function loadOrders() {
   const status = statusFilterEl.value;
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -284,7 +303,7 @@ function formatSessionOrders(zone, orders) {
     .sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
 }
 
-function renderZoneSessionOrders(zone, orders) {
+function renderZoneSessionOrders(zone, orders, settlements = {}) {
   if (!orders.length) {
     zoneSessionOrdersWrapEl.innerHTML = '<div class="card muted">该包厢当前 session 暂无订单。</div>';
     return;
@@ -298,6 +317,11 @@ function renderZoneSessionOrders(zone, orders) {
 
   zoneSessionOrdersWrapEl.innerHTML = [...groups.entries()]
     .map(([customerName, customerOrders]) => {
+      const settleInfo = settlements[customerName] || null;
+      const isSettled = Boolean(settleInfo?.settled);
+      const settledText = isSettled ? '已结' : '未结';
+      const settledBy = isSettled && settleInfo?.updatedByEmployeeUsername ? `（${settleInfo.updatedByEmployeeUsername}）` : '';
+      const settleButtonText = isSettled ? '改成未结' : '已结账';
       const ordersHtml = customerOrders
         .map((order) => {
           const items = order.items
@@ -320,7 +344,19 @@ function renderZoneSessionOrders(zone, orders) {
 
       return `
         <section class="card">
-          <h3 style="margin:0 0 8px;">${customerName}</h3>
+          <div class="row wrap" style="justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+            <h3 style="margin:0;">${customerName}</h3>
+            <div class="row wrap" style="gap:8px;align-items:center;">
+              <span class="small ${isSettled ? '' : 'muted'}">${settledText}${settledBy}</span>
+              <button
+                type="button"
+                class="${isSettled ? 'light' : 'secondary'}"
+                data-zone-session-action="toggle-settlement"
+                data-customer-name-encoded="${encodeAttr(customerName)}"
+                data-settled-next="${isSettled ? 'false' : 'true'}"
+              >${settleButtonText}</button>
+            </div>
+          </div>
           <div class="grid" style="margin-top:0;">${ordersHtml}</div>
         </section>
       `;
@@ -357,9 +393,13 @@ async function refreshZoneSessionDrawer() {
   }
   zoneSessionTitleEl.textContent = `${zone.label} 当前 Session`;
   zoneSessionMetaEl.textContent = `访问码：${zone.accessCode || '----'}`;
-  const orders = await fetchAllActiveOrders();
+  const [orders, settlements] = await Promise.all([
+    fetchAllActiveOrders(),
+    fetchZoneCustomerSettlements(zone.id),
+  ]);
+  adminState.zoneCustomerSettlements = settlements;
   const sessionOrders = formatSessionOrders(zone, orders);
-  renderZoneSessionOrders(zone, sessionOrders);
+  renderZoneSessionOrders(zone, sessionOrders, settlements);
 }
 
 async function loadAll() {
@@ -475,6 +515,31 @@ zoneTodoWrapEl.addEventListener('click', async (event) => {
 
 zoneSessionCloseBtnEl.addEventListener('click', closeZoneSessionDrawer);
 zoneSessionDrawerBackdropEl.addEventListener('click', closeZoneSessionDrawer);
+
+zoneSessionOrdersWrapEl.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-zone-session-action="toggle-settlement"]');
+  if (!button) return;
+  const zoneId = adminState.selectedZoneId;
+  if (!zoneId) return;
+
+  const customerName = decodeURIComponent(String(button.dataset.customerNameEncoded || '')).trim();
+  const settledNext = button.dataset.settledNext === 'true';
+  if (!customerName) return;
+
+  button.disabled = true;
+  try {
+    const settlements = await setCustomerSettlement(zoneId, customerName, settledNext);
+    adminState.zoneCustomerSettlements = settlements;
+    const zone = getZoneById(zoneId);
+    if (!zone) return;
+    const orders = await fetchAllActiveOrders();
+    const sessionOrders = formatSessionOrders(zone, orders);
+    renderZoneSessionOrders(zone, sessionOrders, settlements);
+  } catch (error) {
+    alert(`更新结账状态失败：${error.message}`);
+    button.disabled = false;
+  }
+});
 
 zoneSessionCheckoutBtnEl.addEventListener('click', async () => {
   const zoneId = adminState.selectedZoneId;
