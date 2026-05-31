@@ -378,6 +378,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   price REAL NOT NULL,
   quantity INTEGER NOT NULL,
   subtotal REAL NOT NULL,
+  served INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE
 );
 
@@ -404,6 +405,7 @@ CREATE TABLE IF NOT EXISTS order_history_items (
   price REAL NOT NULL,
   quantity INTEGER NOT NULL,
   subtotal REAL NOT NULL,
+  served INTEGER NOT NULL DEFAULT 0,
   archived_at TEXT NOT NULL
 );
 
@@ -503,6 +505,12 @@ if (!hasColumn('order_history', 'handled_by_employee_id')) {
 }
 if (!hasColumn('order_history', 'handled_by_employee_username')) {
   db.exec("ALTER TABLE order_history ADD COLUMN handled_by_employee_username TEXT NOT NULL DEFAULT ''");
+}
+if (!hasColumn('order_items', 'served')) {
+  db.exec('ALTER TABLE order_items ADD COLUMN served INTEGER NOT NULL DEFAULT 0');
+}
+if (!hasColumn('order_history_items', 'served')) {
+  db.exec('ALTER TABLE order_history_items ADD COLUMN served INTEGER NOT NULL DEFAULT 0');
 }
 
 function getSetting(key) {
@@ -914,6 +922,29 @@ function revokeEmployeeSessionsByEmployee(employeeId) {
     .run(nowIso(), employeeId);
 }
 
+function canEditOrder(order) {
+  return Boolean(order && !['served', 'cancelled'].includes(order.status));
+}
+
+function recalculateOrderTotal(orderId) {
+  const rows = db.prepare('SELECT subtotal FROM order_items WHERE order_id = ? ORDER BY id ASC').all(orderId);
+  const items = rows.map((row) => ({ subtotal: round2(row.subtotal) }));
+  const total = calculateOrderGrandTotal(items);
+  db.prepare('UPDATE orders SET total = ?, updated_at = ? WHERE id = ?').run(total, nowIso(), orderId);
+  return total;
+}
+
+function getEditableOrderOrError(orderId) {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+  if (!order) {
+    return { ok: false, statusCode: 404, error: 'Order not found.' };
+  }
+  if (!canEditOrder(order)) {
+    return { ok: false, statusCode: 409, error: 'Completed or cancelled orders cannot be edited.' };
+  }
+  return { ok: true, order };
+}
+
 function requireEmployeeAuth(req, res, next) {
   const token = sanitizeText(req.get(EMPLOYEE_SESSION_HEADER_NAME) || '', 120);
   const verified = verifyEmployeeSession(token);
@@ -972,8 +1003,8 @@ const archiveAndClearZoneOrdersTx = db.transaction((zoneId, checkoutAt) => {
 
     const insertHistoryItemStmt = db.prepare(`
       INSERT INTO order_history_items(
-        order_id, menu_id, name, price, quantity, subtotal, archived_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        order_id, menu_id, name, price, quantity, subtotal, served, archived_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const item of items) {
@@ -984,6 +1015,7 @@ const archiveAndClearZoneOrdersTx = db.transaction((zoneId, checkoutAt) => {
         round2(item.price),
         Number(item.quantity),
         round2(item.subtotal),
+        item.served === 1 ? 1 : 0,
         archivedAt,
       );
     }
@@ -1077,7 +1109,7 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
   if (!orders.length) return [];
 
   const getItemsStmt = db.prepare(`
-    SELECT order_id, menu_id, name, price, quantity, subtotal
+    SELECT id, order_id, menu_id, name, price, quantity, subtotal, served
     FROM ${itemsTable}
     WHERE order_id = ?
     ORDER BY id ASC
@@ -1085,11 +1117,13 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
 
   return orders.map((order) => {
     const items = getItemsStmt.all(order.id).map((item) => ({
+      itemId: Number(item.id),
       menuId: item.menu_id,
       name: item.name,
       price: round2(item.price),
       quantity: Number(item.quantity),
       subtotal: round2(item.subtotal),
+      served: item.served === 1,
     }));
     return ({
     id: order.id,
@@ -1219,8 +1253,8 @@ function maybeMigrateFromLegacyJson() {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertItemStmt = db.prepare(`
-      INSERT INTO order_items(order_id, menu_id, name, price, quantity, subtotal)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO order_items(order_id, menu_id, name, price, quantity, subtotal, served)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
     `);
 
     const rawOrders = Array.isArray(legacy.orders) ? legacy.orders : [];
@@ -1830,8 +1864,8 @@ app.post('/api/public/orders', (req, res) => {
     );
 
     const insertOrderItemStmt = db.prepare(`
-      INSERT INTO order_items(order_id, menu_id, name, price, quantity, subtotal)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO order_items(order_id, menu_id, name, price, quantity, subtotal, served)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
     `);
 
     for (const item of normalizedItems) {
@@ -2481,6 +2515,10 @@ app.get('/api/employee/auth/me', requireEmployeeAuth, (req, res) => {
   });
 });
 
+app.get('/api/employee/menu', requireEmployeeAuth, (req, res) => {
+  return res.json({ menu: getActiveMenu(), categories: getAllCategories() });
+});
+
 app.get('/api/employee/write-queue', requireEmployeeAuth, (req, res) => {
   return res.json({ writeQueue: getWriteQueueInfo() });
 });
@@ -2508,6 +2546,47 @@ app.patch('/api/employee/orders/:id', requireEmployeeAuth, (req, res) => {
     return res.status(result.statusCode).json({ error: result.error });
   }
   return res.json({ ok: true, order: result.order });
+});
+
+app.patch('/api/employee/orders/:orderId/items/:itemId/served', requireEmployeeAuth, (req, res) => {
+  const orderId = sanitizeText(req.params.orderId, 100);
+  const itemId = Number(req.params.itemId);
+  const served = req.body?.served === true;
+  if (!Number.isInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ error: 'Invalid item id.' });
+  }
+  const result = patchOrderItemServed(orderId, itemId, served);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  return res.json({ ok: true, order: result.order });
+});
+
+app.patch('/api/employee/orders/:orderId/items/:itemId/quantity', requireEmployeeAuth, (req, res) => {
+  const orderId = sanitizeText(req.params.orderId, 100);
+  const itemId = Number(req.params.itemId);
+  const delta = Number(req.body?.delta);
+  if (!Number.isInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ error: 'Invalid item id.' });
+  }
+  const result = patchOrderItemQuantity(orderId, itemId, delta);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  return res.json({ ok: true, order: result.order });
+});
+
+app.post('/api/employee/orders/:orderId/items', requireEmployeeAuth, (req, res) => {
+  const orderId = sanitizeText(req.params.orderId, 100);
+  const menuId = sanitizeText(req.body?.menuId, 100);
+  if (!menuId) {
+    return res.status(400).json({ error: 'menuId is required.' });
+  }
+  const result = addOrderItem(orderId, menuId);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  return res.status(201).json({ ok: true, order: result.order });
 });
 
 app.get('/api/employee/zones', requireEmployeeAuth, (req, res) => {
@@ -2599,6 +2678,102 @@ function patchOrderStatus(orderId, status, actor = null) {
   }
   const updatedOrder = getOrderWithItems({ history: false }).find((o) => o.id === orderId);
   return { ok: true, order: updatedOrder };
+}
+
+function getActiveOrderById(orderId) {
+  return getOrderWithItems({ history: false }).find((order) => order.id === orderId) || null;
+}
+
+function patchOrderItemServed(orderId, itemId, served) {
+  const editable = getEditableOrderOrError(orderId);
+  if (!editable.ok) return editable;
+
+  const item = db.prepare('SELECT id FROM order_items WHERE id = ? AND order_id = ?').get(itemId, orderId);
+  if (!item) {
+    return { ok: false, statusCode: 404, error: 'Order item not found.' };
+  }
+
+  db.prepare('UPDATE order_items SET served = ? WHERE id = ? AND order_id = ?')
+    .run(served ? 1 : 0, itemId, orderId);
+  db.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').run(nowIso(), orderId);
+
+  return { ok: true, order: getActiveOrderById(orderId) };
+}
+
+function patchOrderItemQuantity(orderId, itemId, delta) {
+  const editable = getEditableOrderOrError(orderId);
+  if (!editable.ok) return editable;
+
+  if (!Number.isInteger(delta) || ![-1, 1].includes(delta)) {
+    return { ok: false, statusCode: 400, error: 'Invalid delta.' };
+  }
+
+  const item = db.prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?').get(itemId, orderId);
+  if (!item) {
+    return { ok: false, statusCode: 404, error: 'Order item not found.' };
+  }
+  if (item.served === 1) {
+    return { ok: false, statusCode: 409, error: 'Served items cannot be edited.' };
+  }
+
+  const allItems = db.prepare('SELECT id, quantity FROM order_items WHERE order_id = ? ORDER BY id ASC').all(orderId);
+  const totalQty = allItems.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+
+  if (delta === -1 && Number(item.quantity) <= 1) {
+    if (totalQty <= 1) {
+      return { ok: false, statusCode: 409, error: 'An order must keep at least one item.' };
+    }
+    db.prepare('DELETE FROM order_items WHERE id = ? AND order_id = ?').run(itemId, orderId);
+  } else {
+    const nextQty = Math.max(1, Math.min(99, Number(item.quantity) + delta));
+    db.prepare(`
+      UPDATE order_items
+      SET quantity = ?, subtotal = ?
+      WHERE id = ? AND order_id = ?
+    `).run(nextQty, round2(Number(item.price) * nextQty), itemId, orderId);
+  }
+
+  recalculateOrderTotal(orderId);
+  return { ok: true, order: getActiveOrderById(orderId) };
+}
+
+function addOrderItem(orderId, menuId) {
+  const editable = getEditableOrderOrError(orderId);
+  if (!editable.ok) return editable;
+
+  const menuItem = db.prepare('SELECT id, name, price FROM menu WHERE id = ? AND available = 1').get(menuId);
+  if (!menuItem) {
+    return { ok: false, statusCode: 404, error: 'Menu item not found or unavailable.' };
+  }
+
+  const existing = db.prepare(`
+    SELECT id, quantity
+    FROM order_items
+    WHERE order_id = ? AND menu_id = ? AND served = 0
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(orderId, menuId);
+
+  if (existing) {
+    const nextQty = Math.min(99, Number(existing.quantity) + 1);
+    db.prepare('UPDATE order_items SET quantity = ?, subtotal = ? WHERE id = ? AND order_id = ?')
+      .run(nextQty, round2(Number(menuItem.price) * nextQty), existing.id, orderId);
+  } else {
+    db.prepare(`
+      INSERT INTO order_items(order_id, menu_id, name, price, quantity, subtotal, served)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      orderId,
+      menuItem.id,
+      menuItem.name,
+      round2(menuItem.price),
+      1,
+      round2(Number(menuItem.price)),
+    );
+  }
+
+  recalculateOrderTotal(orderId);
+  return { ok: true, order: getActiveOrderById(orderId) };
 }
 
 app.patch('/api/admin/orders/:id', requireEmployeeAuth, (req, res) => {

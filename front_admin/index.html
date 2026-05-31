@@ -74,6 +74,18 @@
           <button class="warn" id="zoneSessionCheckoutBtn">结单清零</button>
         </div>
       </aside>
+
+      <div id="orderItemMenuBackdrop" class="admin-drawer-backdrop" hidden></div>
+      <aside id="orderItemMenuModal" class="admin-drawer" aria-hidden="true">
+        <div class="admin-drawer-head">
+          <div>
+            <h3 id="orderItemMenuTitle">选择加菜</h3>
+            <div class="small muted">点击菜品后会直接加到当前订单</div>
+          </div>
+          <button class="light" id="orderItemMenuCloseBtn" aria-label="关闭">✕</button>
+        </div>
+        <div id="orderItemMenuList" class="admin-drawer-body"></div>
+      </aside>
     </main>
 
     <script src="/front_admin/app.js"></script>

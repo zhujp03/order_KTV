@@ -19,6 +19,11 @@ const zoneSessionOrdersWrapEl = document.getElementById('zoneSessionOrdersWrap')
 const zoneSessionCloseBtnEl = document.getElementById('zoneSessionCloseBtn');
 const zoneSessionCheckoutBtnEl = document.getElementById('zoneSessionCheckoutBtn');
 const writeQueueStatusEl = document.getElementById('writeQueueStatus');
+const orderItemMenuModalEl = document.getElementById('orderItemMenuModal');
+const orderItemMenuBackdropEl = document.getElementById('orderItemMenuBackdrop');
+const orderItemMenuTitleEl = document.getElementById('orderItemMenuTitle');
+const orderItemMenuListEl = document.getElementById('orderItemMenuList');
+const orderItemMenuCloseBtnEl = document.getElementById('orderItemMenuCloseBtn');
 
 const statusText = {
   new: '新单',
@@ -38,6 +43,8 @@ const adminState = {
   employeeUsername: localStorage.getItem('employee_session_username') || '',
   writeQueue: null,
   zoneCustomerSettlements: {},
+  menu: [],
+  addItemOrderId: '',
 };
 
 function getEmployeeAuthHeaders() {
@@ -89,6 +96,57 @@ function encodeAttr(value) {
   return encodeURIComponent(String(value || ''));
 }
 
+function decodeAttr(value) {
+  return decodeURIComponent(String(value || ''));
+}
+
+function canEditOrder(order) {
+  return Boolean(order && !['served', 'cancelled'].includes(order.status));
+}
+
+function renderOrderItems(order, { inDrawer = false } = {}) {
+  const editable = canEditOrder(order);
+  return order.items
+    .map((item) => `
+      <li class="order-item-row ${item.served ? 'item-served-row' : ''}">
+        <div class="order-item-main">
+          <span>${item.name} x ${item.quantity}</span>
+          <span class="muted">(${currency(item.subtotal)})</span>
+        </div>
+        <div class="row wrap order-item-actions">
+          <button
+            type="button"
+            class="${item.served ? 'light' : 'secondary'}"
+            data-order-item-action="served"
+            data-order-id="${order.id}"
+            data-item-id="${item.itemId}"
+            data-served-next="${item.served ? 'false' : 'true'}"
+            ${editable ? '' : 'disabled'}
+          >${item.served ? '改成未送' : '已送'}</button>
+          <button
+            type="button"
+            class="light"
+            data-order-item-action="quantity"
+            data-order-id="${order.id}"
+            data-item-id="${item.itemId}"
+            data-delta="-1"
+            ${editable && !item.served ? '' : 'disabled'}
+          >-</button>
+          <button
+            type="button"
+            class="light"
+            data-order-item-action="quantity"
+            data-order-id="${order.id}"
+            data-item-id="${item.itemId}"
+            data-delta="1"
+            ${editable && !item.served ? '' : 'disabled'}
+          >+</button>
+        </div>
+      </li>
+    `)
+    .join('');
+}
+
 function renderOrders(orders) {
   const visibleOrders = (orders || []).filter((order) => order.status !== 'served');
 
@@ -99,11 +157,9 @@ function renderOrders(orders) {
 
   ordersWrapEl.innerHTML = visibleOrders
     .map((order) => {
-      const items = order.items
-        .map((item) => `<li>${item.name} x ${item.quantity} <span class="muted">(${currency(item.subtotal)})</span></li>`)
-        .join('');
-
       const statusClass = `status-${order.status}`;
+      const editable = canEditOrder(order);
+      const items = renderOrderItems(order);
 
       return `
         <article class="order-card">
@@ -114,7 +170,7 @@ function renderOrders(orders) {
           <div class="small muted">下单人：${order.customerName || 'Guest'}</div>
           <div class="small muted">接单员工：${order.handledByEmployeeUsername || '-'}</div>
           <div class="small muted">订单 ${order.id.slice(0, 8)} · ${formatTime(order.createdAt)}</div>
-          <ul>${items}</ul>
+          <ul class="order-item-list">${items}</ul>
           <div><strong>合计 ${currency(order.total)}</strong></div>
           <div class="small">备注：${order.note || '无'}</div>
           <div class="row wrap" style="margin-top: 8px">
@@ -122,6 +178,7 @@ function renderOrders(orders) {
             <button data-order-action="status" data-id="${order.id}" data-status="ready">待上桌</button>
             <button data-order-action="status" data-id="${order.id}" data-status="served" class="light">完成</button>
             <button data-order-action="status" data-id="${order.id}" data-status="cancelled" class="warn">取消</button>
+            <button data-order-action="add-item" data-id="${order.id}" class="light" ${editable ? '' : 'disabled'}>加菜</button>
           </div>
         </article>`;
     })
@@ -163,11 +220,84 @@ function renderWriteQueue(info) {
   writeQueueStatusEl.textContent = `写入队列：待处理 ${pending} · ${processing ? '写入中' : '空闲'}`;
 }
 
+function renderAddItemMenu() {
+  if (!orderItemMenuListEl) return;
+  if (!adminState.menu.length) {
+    orderItemMenuListEl.innerHTML = '<div class="card muted">当前没有可加的菜品。</div>';
+    return;
+  }
+
+  orderItemMenuListEl.innerHTML = adminState.menu
+    .map((item) => `
+      <article class="order-card">
+        <div class="order-head">
+          <strong>${item.name}</strong>
+          <span class="badge">${currency(item.price)}</span>
+        </div>
+        <div class="small muted">${item.category || 'Uncategorized'}</div>
+        <div class="small muted">${item.description || '无描述'}</div>
+        <div class="row wrap" style="margin-top:8px;">
+          <button
+            type="button"
+            class="secondary"
+            data-order-menu-action="add"
+            data-menu-id="${item.id}"
+          >加入订单</button>
+        </div>
+      </article>
+    `)
+    .join('');
+}
+
+async function openAddItemMenu(orderId) {
+  adminState.addItemOrderId = orderId;
+  if (!adminState.menu.length) {
+    await loadEmployeeMenu();
+  }
+  const order = (await fetchAllActiveOrders()).find((item) => item.id === orderId);
+  orderItemMenuTitleEl.textContent = order ? `给 ${order.customerName || order.zoneLabel} 加菜` : '选择加菜';
+  renderAddItemMenu();
+  orderItemMenuBackdropEl.hidden = false;
+  orderItemMenuModalEl.classList.add('open');
+  orderItemMenuModalEl.setAttribute('aria-hidden', 'false');
+}
+
+function closeAddItemMenu() {
+  adminState.addItemOrderId = '';
+  orderItemMenuModalEl.classList.remove('open');
+  orderItemMenuModalEl.setAttribute('aria-hidden', 'true');
+  orderItemMenuBackdropEl.hidden = true;
+}
+
 async function updateOrderStatus(orderId, status) {
   await employeeApiFetch(`/api/employee/orders/${encodeURIComponent(orderId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
+  });
+}
+
+async function updateOrderItemServed(orderId, itemId, served) {
+  await employeeApiFetch(`/api/employee/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/served`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ served }),
+  });
+}
+
+async function updateOrderItemQuantity(orderId, itemId, delta) {
+  await employeeApiFetch(`/api/employee/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/quantity`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ delta }),
+  });
+}
+
+async function addOrderMenuItem(orderId, menuId) {
+  await employeeApiFetch(`/api/employee/orders/${encodeURIComponent(orderId)}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ menuId }),
   });
 }
 
@@ -225,6 +355,11 @@ async function loadZones() {
 
   adminState.zones = Array.isArray(data.zones) ? data.zones : [];
   renderZones(adminState.zones);
+}
+
+async function loadEmployeeMenu() {
+  const data = await employeeApiFetch('/api/employee/menu');
+  adminState.menu = Array.isArray(data.menu) ? data.menu : [];
 }
 
 async function fetchAllActiveOrders() {
@@ -324,9 +459,8 @@ function renderZoneSessionOrders(zone, orders, settlements = {}) {
       const settleButtonText = isSettled ? '改成未结' : '已结账';
       const ordersHtml = customerOrders
         .map((order) => {
-          const items = order.items
-            .map((item) => `<li>${item.name} x ${item.quantity} <span class="muted">(${currency(item.subtotal)})</span></li>`)
-            .join('');
+          const items = renderOrderItems(order, { inDrawer: true });
+          const editable = canEditOrder(order);
           return `
             <article class="order-card">
               <div class="order-head">
@@ -334,9 +468,12 @@ function renderZoneSessionOrders(zone, orders, settlements = {}) {
                 <span class="badge status-${order.status}">${statusText[order.status] || order.status}</span>
               </div>
               <div class="small muted">${formatTime(order.createdAt)}</div>
-              <ul>${items}</ul>
+              <ul class="order-item-list">${items}</ul>
               <div><strong>合计 ${currency(order.total)}</strong></div>
               <div class="small">备注：${order.note || '无'}</div>
+              <div class="row wrap" style="margin-top:8px;">
+                <button type="button" class="light" data-order-action="add-item" data-id="${order.id}" ${editable ? '' : 'disabled'}>加菜</button>
+              </div>
             </article>
           `;
         })
@@ -471,13 +608,35 @@ async function employeeLogout() {
 }
 
 ordersWrapEl.addEventListener('click', async (event) => {
-  const button = event.target.closest('button[data-order-action="status"]');
+  const itemButton = event.target.closest('button[data-order-item-action]');
+  if (itemButton) {
+    const orderId = itemButton.dataset.orderId;
+    const itemId = itemButton.dataset.itemId;
+    try {
+      if (itemButton.dataset.orderItemAction === 'served') {
+        await updateOrderItemServed(orderId, itemId, itemButton.dataset.servedNext === 'true');
+      }
+      if (itemButton.dataset.orderItemAction === 'quantity') {
+        await updateOrderItemQuantity(orderId, itemId, Number(itemButton.dataset.delta));
+      }
+      await loadAll();
+    } catch (error) {
+      alert(`更新失败：${error.message}`);
+    }
+    return;
+  }
+
+  const button = event.target.closest('button[data-order-action]');
   if (!button) return;
 
   const orderId = button.dataset.id;
   const status = button.dataset.status;
 
   try {
+    if (button.dataset.orderAction === 'add-item') {
+      await openAddItemMenu(orderId);
+      return;
+    }
     await updateOrderStatus(orderId, status);
     await loadAll();
   } catch (error) {
@@ -515,8 +674,38 @@ zoneTodoWrapEl.addEventListener('click', async (event) => {
 
 zoneSessionCloseBtnEl.addEventListener('click', closeZoneSessionDrawer);
 zoneSessionDrawerBackdropEl.addEventListener('click', closeZoneSessionDrawer);
+orderItemMenuCloseBtnEl.addEventListener('click', closeAddItemMenu);
+orderItemMenuBackdropEl.addEventListener('click', closeAddItemMenu);
 
 zoneSessionOrdersWrapEl.addEventListener('click', async (event) => {
+  const itemButton = event.target.closest('button[data-order-item-action]');
+  if (itemButton) {
+    const orderId = itemButton.dataset.orderId;
+    const itemId = itemButton.dataset.itemId;
+    try {
+      if (itemButton.dataset.orderItemAction === 'served') {
+        await updateOrderItemServed(orderId, itemId, itemButton.dataset.servedNext === 'true');
+      }
+      if (itemButton.dataset.orderItemAction === 'quantity') {
+        await updateOrderItemQuantity(orderId, itemId, Number(itemButton.dataset.delta));
+      }
+      await loadAll();
+    } catch (error) {
+      alert(`更新失败：${error.message}`);
+    }
+    return;
+  }
+
+  const addItemButton = event.target.closest('button[data-order-action="add-item"]');
+  if (addItemButton) {
+    try {
+      await openAddItemMenu(addItemButton.dataset.id);
+    } catch (error) {
+      alert(`打开加菜失败：${error.message}`);
+    }
+    return;
+  }
+
   const button = event.target.closest('button[data-zone-session-action="toggle-settlement"]');
   if (!button) return;
   const zoneId = adminState.selectedZoneId;
@@ -538,6 +727,20 @@ zoneSessionOrdersWrapEl.addEventListener('click', async (event) => {
   } catch (error) {
     alert(`更新结账状态失败：${error.message}`);
     button.disabled = false;
+  }
+});
+
+orderItemMenuListEl.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-order-menu-action="add"]');
+  if (!button) return;
+  if (!adminState.addItemOrderId) return;
+
+  try {
+    await addOrderMenuItem(adminState.addItemOrderId, button.dataset.menuId);
+    closeAddItemMenu();
+    await loadAll();
+  } catch (error) {
+    alert(`加菜失败：${error.message}`);
   }
 });
 
