@@ -774,6 +774,70 @@ function clearZoneCustomerSettlements(zoneId) {
   db.prepare('DELETE FROM zone_customer_settlements WHERE zone_id = ?').run(zoneId);
 }
 
+function getZoneSessionOrders(zoneId) {
+  const zone = getZoneById(zoneId);
+  if (!zone) return [];
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const periodStartMs = new Date(periodStartAt).getTime();
+  return getOrderWithItems({ history: false })
+    .filter((order) => order.zoneId === zoneId)
+    .filter((order) => {
+      const createdMs = new Date(order.createdAt).getTime();
+      return Number.isFinite(createdMs) && createdMs >= periodStartMs;
+    });
+}
+
+function getZoneCheckoutStatus(zoneId) {
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return {
+      zoneId,
+      periodStartAt: nowIso(),
+      customerNames: [],
+      unsettledCustomerNames: [],
+      settlements: {},
+      customerCount: 0,
+      unsettledCustomerCount: 0,
+      canCheckout: true,
+    };
+  }
+
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const sessionOrders = getZoneSessionOrders(zoneId);
+  const customerNames = [...new Set(
+    sessionOrders
+      .map((order) => sanitizeText(order.customerName || '', 40) || 'Guest')
+      .filter(Boolean),
+  )];
+  const settlements = getZoneCustomerSettlements(zoneId, periodStartAt);
+  const unsettledCustomerNames = customerNames.filter((customerName) => !settlements[customerName]?.settled);
+
+  return {
+    zoneId,
+    periodStartAt,
+    customerNames,
+    unsettledCustomerNames,
+    settlements,
+    customerCount: customerNames.length,
+    unsettledCustomerCount: unsettledCustomerNames.length,
+    canCheckout: unsettledCustomerNames.length === 0,
+  };
+}
+
+function ensureZoneCanCheckout(zoneId) {
+  const status = getZoneCheckoutStatus(zoneId);
+  if (status.canCheckout) {
+    return { ok: true, checkoutStatus: status };
+  }
+  const customerList = status.unsettledCustomerNames.join('、');
+  return {
+    ok: false,
+    statusCode: 409,
+    error: `还有未结顾客，不能结单清零：${customerList}`,
+    checkoutStatus: status,
+  };
+}
+
 function setZoneCompleted(zoneId, completed) {
   db.prepare(`
     UPDATE zones
@@ -1080,21 +1144,26 @@ function getZoneList(baseUrl) {
     zoneTotalMap.set(order.zoneId, round2((zoneTotalMap.get(order.zoneId) || 0) + total));
   }
 
-  return zones.map((zone) => ({
-    id: zone.id,
-    label: zone.label,
-    token: zone.token,
-    accessCode: zone.access_code || '',
-    accessCodeUpdatedAt: zone.access_code_updated_at || null,
-    completed: zone.completed === 1,
-    completedAt: zone.completed_at || null,
-    createdAt: zone.created_at,
-    activeOrderCount: Number(zone.active_order_count || 0),
-    activeOrderTotal: round2(zoneTotalMap.get(zone.id) || 0),
-    accessUrl: `${baseUrl}/o/${zone.token}`,
-    qrPngUrl: `${baseUrl}/api/admin/zones/${zone.id}/qrcode?format=png`,
-    qrSvgUrl: `${baseUrl}/api/admin/zones/${zone.id}/qrcode?format=svg`,
-  }));
+  return zones.map((zone) => {
+    const checkoutStatus = getZoneCheckoutStatus(zone.id);
+    return {
+      id: zone.id,
+      label: zone.label,
+      token: zone.token,
+      accessCode: zone.access_code || '',
+      accessCodeUpdatedAt: zone.access_code_updated_at || null,
+      completed: zone.completed === 1,
+      completedAt: zone.completed_at || null,
+      createdAt: zone.created_at,
+      activeOrderCount: Number(zone.active_order_count || 0),
+      activeOrderTotal: round2(zoneTotalMap.get(zone.id) || 0),
+      canCheckout: checkoutStatus.canCheckout,
+      unsettledCustomerCount: checkoutStatus.unsettledCustomerCount,
+      accessUrl: `${baseUrl}/o/${zone.token}`,
+      qrPngUrl: `${baseUrl}/api/admin/zones/${zone.id}/qrcode?format=png`,
+      qrSvgUrl: `${baseUrl}/api/admin/zones/${zone.id}/qrcode?format=svg`,
+    };
+  });
 }
 
 function getOrderWithItems({ history = false, status = '' } = {}) {
@@ -2313,6 +2382,10 @@ app.post('/api/admin/zones/:id/checkout', (req, res) => {
   if (!zone) {
     return res.status(404).json({ error: 'Zone not found.' });
   }
+  const guard = ensureZoneCanCheckout(zoneId);
+  if (!guard.ok) {
+    return res.status(guard.statusCode).json({ error: guard.error, checkoutStatus: guard.checkoutStatus });
+  }
 
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);
@@ -2600,9 +2673,8 @@ app.get('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (re
   if (!zone) {
     return res.status(404).json({ error: 'Zone not found.' });
   }
-  const periodStartAt = getZonePeriodStartAt(zone);
-  const settlements = getZoneCustomerSettlements(zoneId, periodStartAt);
-  return res.json({ zoneId, periodStartAt, settlements });
+  const checkoutStatus = getZoneCheckoutStatus(zoneId);
+  return res.json(checkoutStatus);
 });
 
 app.patch('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (req, res) => {
@@ -2627,8 +2699,8 @@ app.patch('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (
   if (!result.ok) {
     return res.status(400).json({ error: 'Invalid customer settlement data.' });
   }
-  const settlements = getZoneCustomerSettlements(zoneId, periodStartAt);
-  return res.json({ ok: true, zoneId, periodStartAt, settlements });
+  const checkoutStatus = getZoneCheckoutStatus(zoneId);
+  return res.json({ ok: true, ...checkoutStatus });
 });
 
 app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => {
@@ -2636,6 +2708,10 @@ app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => 
   const zone = getZoneById(zoneId);
   if (!zone) {
     return res.status(404).json({ error: 'Zone not found.' });
+  }
+  const guard = ensureZoneCanCheckout(zoneId);
+  if (!guard.ok) {
+    return res.status(guard.statusCode).json({ error: guard.error, checkoutStatus: guard.checkoutStatus });
   }
   const checkoutAt = nowIso();
   const clearedOrders = archiveAndClearZoneOrdersTx(zoneId, checkoutAt);

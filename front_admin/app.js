@@ -43,6 +43,7 @@ const adminState = {
   employeeUsername: localStorage.getItem('employee_session_username') || '',
   writeQueue: null,
   zoneCustomerSettlements: {},
+  zoneCheckoutStatus: null,
   menu: [],
   addItemOrderId: '',
 };
@@ -193,6 +194,11 @@ function renderZones(zones) {
 
   zoneTodoWrapEl.innerHTML = zones
     .map((zone) => {
+      const unsettledCount = Number(zone.unsettledCustomerCount || 0);
+      const canCheckout = zone.canCheckout !== false;
+      const checkoutHint = canCheckout
+        ? '所有顾客已结，可结单清零'
+        : `还有 ${unsettledCount} 人未结，暂不可结单`;
       return `
       <div class="order-card zone-card-clickable" data-zone-open="${zone.id}">
         <div class="order-head">
@@ -201,8 +207,9 @@ function renderZones(zones) {
         </div>
         <div class="zone-meta">访问码：${zone.accessCode || '----'}</div>
         <div class="zone-meta">当前未结金额：${currency(zone.activeOrderTotal || 0)}</div>
+        <div class="zone-meta">${checkoutHint}</div>
         <div class="row wrap" style="margin-top: 8px">
-          <button class="warn" data-zone-action="checkout" data-id="${zone.id}">结单清零</button>
+          <button class="warn" data-zone-action="checkout" data-id="${zone.id}" ${canCheckout ? '' : 'disabled'}>结单清零</button>
         </div>
       </div>`;
     })
@@ -327,7 +334,9 @@ async function checkoutZone(zoneId) {
 
 async function fetchZoneCustomerSettlements(zoneId) {
   const data = await employeeApiFetch(`/api/employee/zones/${encodeURIComponent(zoneId)}/customer-settlements`);
-  return data?.settlements && typeof data.settlements === 'object' ? data.settlements : {};
+  return data && typeof data === 'object'
+    ? data
+    : { settlements: {}, unsettledCustomerNames: [], unsettledCustomerCount: 0, canCheckout: true };
 }
 
 async function setCustomerSettlement(zoneId, customerName, settled) {
@@ -336,7 +345,9 @@ async function setCustomerSettlement(zoneId, customerName, settled) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ customerName, settled }),
   });
-  return data?.settlements && typeof data.settlements === 'object' ? data.settlements : {};
+  return data && typeof data === 'object'
+    ? data
+    : { settlements: {}, unsettledCustomerNames: [], unsettledCustomerCount: 0, canCheckout: true };
 }
 
 async function loadOrders() {
@@ -426,6 +437,19 @@ function getZoneById(zoneId) {
   return adminState.zones.find((z) => z.id === zoneId) || null;
 }
 
+function applyZoneCheckoutStatus(zoneId, checkoutStatus) {
+  if (!zoneId || !checkoutStatus) return;
+  adminState.zones = adminState.zones.map((zone) => {
+    if (zone.id !== zoneId) return zone;
+    return {
+      ...zone,
+      canCheckout: checkoutStatus.canCheckout !== false,
+      unsettledCustomerCount: Number(checkoutStatus.unsettledCustomerCount || 0),
+    };
+  });
+  renderZones(adminState.zones);
+}
+
 function formatSessionOrders(zone, orders) {
   const periodStartMs = Date.parse(zone?.accessCodeUpdatedAt || zone?.createdAt || '');
   const safeStart = Number.isNaN(periodStartMs) ? 0 : periodStartMs;
@@ -506,6 +530,7 @@ function openZoneSessionDrawer(zone) {
   zoneSessionTitleEl.textContent = `${zone.label} 当前 Session`;
   zoneSessionMetaEl.textContent = `访问码：${zone.accessCode || '----'}`;
   zoneSessionOrdersWrapEl.innerHTML = '<div class="card muted">加载中...</div>';
+  zoneSessionCheckoutBtnEl.disabled = true;
   zoneSessionDrawerBackdropEl.hidden = false;
   zoneSessionDrawerEl.classList.add('open');
   zoneSessionDrawerEl.setAttribute('aria-hidden', 'false');
@@ -516,6 +541,8 @@ function openZoneSessionDrawer(zone) {
 
 function closeZoneSessionDrawer() {
   adminState.selectedZoneId = '';
+  adminState.zoneCustomerSettlements = {};
+  adminState.zoneCheckoutStatus = null;
   zoneSessionDrawerEl.classList.remove('open');
   zoneSessionDrawerEl.setAttribute('aria-hidden', 'true');
   zoneSessionDrawerBackdropEl.hidden = true;
@@ -530,11 +557,28 @@ async function refreshZoneSessionDrawer() {
   }
   zoneSessionTitleEl.textContent = `${zone.label} 当前 Session`;
   zoneSessionMetaEl.textContent = `访问码：${zone.accessCode || '----'}`;
-  const [orders, settlements] = await Promise.all([
+  const [orders, checkoutStatus] = await Promise.all([
     fetchAllActiveOrders(),
     fetchZoneCustomerSettlements(zone.id),
   ]);
+  const settlements = checkoutStatus?.settlements && typeof checkoutStatus.settlements === 'object'
+    ? checkoutStatus.settlements
+    : {};
+  const unsettledNames = Array.isArray(checkoutStatus?.unsettledCustomerNames)
+    ? checkoutStatus.unsettledCustomerNames.filter(Boolean)
+    : [];
   adminState.zoneCustomerSettlements = settlements;
+  adminState.zoneCheckoutStatus = {
+    ...checkoutStatus,
+    settlements,
+    unsettledCustomerNames: unsettledNames,
+    canCheckout: checkoutStatus?.canCheckout !== false,
+  };
+  applyZoneCheckoutStatus(zone.id, adminState.zoneCheckoutStatus);
+  zoneSessionMetaEl.textContent = unsettledNames.length
+    ? `访问码：${zone.accessCode || '----'} · 未结：${unsettledNames.join('、')}`
+    : `访问码：${zone.accessCode || '----'} · 所有人已结`;
+  zoneSessionCheckoutBtnEl.disabled = adminState.zoneCheckoutStatus.canCheckout === false;
   const sessionOrders = formatSessionOrders(zone, orders);
   renderZoneSessionOrders(zone, sessionOrders, settlements);
 }
@@ -717,10 +761,26 @@ zoneSessionOrdersWrapEl.addEventListener('click', async (event) => {
 
   button.disabled = true;
   try {
-    const settlements = await setCustomerSettlement(zoneId, customerName, settledNext);
+    const checkoutStatus = await setCustomerSettlement(zoneId, customerName, settledNext);
+    const settlements = checkoutStatus?.settlements && typeof checkoutStatus.settlements === 'object'
+      ? checkoutStatus.settlements
+      : {};
     adminState.zoneCustomerSettlements = settlements;
+    adminState.zoneCheckoutStatus = {
+      ...checkoutStatus,
+      settlements,
+      unsettledCustomerNames: Array.isArray(checkoutStatus?.unsettledCustomerNames)
+        ? checkoutStatus.unsettledCustomerNames.filter(Boolean)
+        : [],
+      canCheckout: checkoutStatus?.canCheckout !== false,
+    };
     const zone = getZoneById(zoneId);
     if (!zone) return;
+    applyZoneCheckoutStatus(zone.id, adminState.zoneCheckoutStatus);
+    zoneSessionMetaEl.textContent = adminState.zoneCheckoutStatus.unsettledCustomerNames.length
+      ? `访问码：${zone.accessCode || '----'} · 未结：${adminState.zoneCheckoutStatus.unsettledCustomerNames.join('、')}`
+      : `访问码：${zone.accessCode || '----'} · 所有人已结`;
+    zoneSessionCheckoutBtnEl.disabled = adminState.zoneCheckoutStatus.canCheckout === false;
     const orders = await fetchAllActiveOrders();
     const sessionOrders = formatSessionOrders(zone, orders);
     renderZoneSessionOrders(zone, sessionOrders, settlements);
