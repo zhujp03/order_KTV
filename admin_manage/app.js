@@ -27,6 +27,7 @@ const reportDateInputEl = document.getElementById('reportDateInput');
 const loadReportBtnEl = document.getElementById('loadReportBtn');
 const reportSummaryEl = document.getElementById('reportSummary');
 const reportOrdersListEl = document.getElementById('reportOrdersList');
+const employeeDisplayNameInputEl = document.getElementById('employeeDisplayNameInput');
 const employeeUsernameInputEl = document.getElementById('employeeUsernameInput');
 const employeePasswordInputEl = document.getElementById('employeePasswordInput');
 const addEmployeeBtnEl = document.getElementById('addEmployeeBtn');
@@ -630,12 +631,13 @@ async function loadDailyReport() {
 function renderEmployees() {
   if (!employeeTbodyEl) return;
   if (!employeesState.length) {
-    employeeTbodyEl.innerHTML = '<tr><td colspan="3" class="muted">暂无员工</td></tr>';
+    employeeTbodyEl.innerHTML = '<tr><td colspan="4" class="muted">暂无员工</td></tr>';
     return;
   }
   employeeTbodyEl.innerHTML = employeesState
     .map((emp) => `
       <tr data-employee-id="${emp.id}">
+        <td><input data-field="displayName" value="${escapeHtml(emp.displayName || '')}" /></td>
         <td><input data-field="username" value="${escapeHtml(emp.username || '')}" /></td>
         <td><input data-field="password" type="password" placeholder="留空不修改密码" /></td>
         <td>
@@ -658,26 +660,28 @@ async function loadEmployees() {
 }
 
 async function addEmployee() {
+  const displayName = String(employeeDisplayNameInputEl.value || '').trim();
   const username = String(employeeUsernameInputEl.value || '').trim();
   const password = String(employeePasswordInputEl.value || '').trim();
-  if (!username || !password) {
-    throw new Error('请输入用户名和密码。');
+  if (!displayName || !username || !password) {
+    throw new Error('请输入真实姓名、用户名和密码。');
   }
   const res = await fetch('/api/admin/employees', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ displayName, username, password }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || '新增员工失败');
+  employeeDisplayNameInputEl.value = '';
   employeeUsernameInputEl.value = '';
   employeePasswordInputEl.value = '';
   employeesState = Array.isArray(data.employees) ? data.employees : employeesState;
   renderEmployees();
 }
 
-async function saveEmployee(employeeId, username, password) {
-  const body = { username };
+async function saveEmployee(employeeId, displayName, username, password) {
+  const body = { displayName, username };
   if (String(password || '').trim()) body.password = String(password).trim();
   const res = await fetch(`/api/admin/employees/${encodeURIComponent(employeeId)}`, {
     method: 'PATCH',
@@ -933,13 +937,19 @@ if (employeeTbodyEl) {
     const employeeId = button.dataset.id;
     const action = button.dataset.action;
     const row = button.closest('tr[data-employee-id]');
+    const displayNameInput = row?.querySelector('input[data-field="displayName"]');
     const usernameInput = row?.querySelector('input[data-field="username"]');
     const passwordInput = row?.querySelector('input[data-field="password"]');
 
     try {
       employeeManageMsgEl.textContent = '保存中...';
       if (action === 'save-employee') {
-        await saveEmployee(employeeId, usernameInput?.value || '', passwordInput?.value || '');
+        await saveEmployee(
+          employeeId,
+          displayNameInput?.value || '',
+          usernameInput?.value || '',
+          passwordInput?.value || '',
+        );
         if (passwordInput) passwordInput.value = '';
       } else if (action === 'delete-employee') {
         await deleteEmployee(employeeId);

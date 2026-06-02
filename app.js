@@ -424,6 +424,7 @@ CREATE TABLE IF NOT EXISTS zone_sessions (
 CREATE TABLE IF NOT EXISTS employees (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -511,6 +512,9 @@ if (!hasColumn('order_items', 'served')) {
 }
 if (!hasColumn('order_history_items', 'served')) {
   db.exec('ALTER TABLE order_history_items ADD COLUMN served INTEGER NOT NULL DEFAULT 0');
+}
+if (!hasColumn('employees', 'display_name')) {
+  db.exec("ALTER TABLE employees ADD COLUMN display_name TEXT NOT NULL DEFAULT ''");
 }
 
 function getSetting(key) {
@@ -824,6 +828,61 @@ function getZoneCheckoutStatus(zoneId) {
   };
 }
 
+function buildCustomerReceipt({ zone, customerName, orders, employee }) {
+  const requestedCustomerName = sanitizeText(customerName, 40);
+  const safeCustomerName = requestedCustomerName && requestedCustomerName !== '未填写'
+    ? requestedCustomerName
+    : 'Guest';
+  const receiptOrders = (orders || [])
+    .filter((order) => (sanitizeText(order.customerName || '', 40) || 'Guest') === safeCustomerName)
+    .filter((order) => order.status !== 'cancelled')
+    .sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
+
+  const itemsMap = new Map();
+  for (const order of receiptOrders) {
+    for (const item of order.items || []) {
+      const key = [item.menuId || '', item.name || '', Number(item.price || 0).toFixed(2)].join('::');
+      const existing = itemsMap.get(key) || {
+        name: item.name || 'Item',
+        price: round2(item.price),
+        quantity: 0,
+        subtotal: 0,
+      };
+      existing.quantity += Number(item.quantity || 0);
+      existing.subtotal = round2(existing.subtotal + Number(item.subtotal || 0));
+      itemsMap.set(key, existing);
+    }
+  }
+
+  const items = Array.from(itemsMap.values());
+  const subtotal = round2(items.reduce((sum, item) => sum + Number(item.subtotal || 0), 0));
+  const serviceCharge = round2(subtotal * SERVICE_RATE);
+  const tax = ceil2((subtotal + serviceCharge) * TAX_RATE);
+  const total = round2(subtotal + serviceCharge + tax);
+  const firstOrder = receiptOrders[0] || null;
+  const venueName = getSetting('venue_name') || 'Universal Order System';
+
+  return {
+    venueName,
+    receiptType: 'Dine In',
+    waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
+    customerName: safeCustomerName,
+    zoneLabel: zone?.label || '',
+    serial: `${String(zone?.id || '').slice(0, 8)}-${safeCustomerName.slice(0, 6)}`,
+    chk: `${receiptOrders.length}/${items.length}/${receiptOrders.reduce((sum, order) => sum + Number(order.items?.length || 0), 0)}`,
+    openAt: firstOrder?.createdAt || nowIso(),
+    printedAt: nowIso(),
+    printCount: 1,
+    items,
+    subtotal,
+    serviceCharge,
+    tax,
+    total,
+    orderCount: receiptOrders.length,
+    orderIds: receiptOrders.map((order) => order.id),
+  };
+}
+
 function ensureZoneCanCheckout(zoneId) {
   const status = getZoneCheckoutStatus(zoneId);
   if (status.canCheckout) {
@@ -917,19 +976,20 @@ function ensureDefaultEmployee() {
   if (Number(countRow?.count || 0) > 0) return;
   const now = nowIso();
   db.prepare(`
-    INSERT INTO employees(id, username, password_hash, active, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?)
-  `).run(createId(), 'staff', hashEmployeePassword('123456'), now, now);
+    INSERT INTO employees(id, username, display_name, password_hash, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?)
+  `).run(createId(), 'staff', 'Staff', hashEmployeePassword('123456'), now, now);
   console.log('[employee] default account created: staff / 123456 (please change in admin_manage)');
 }
 
 function getActiveEmployees() {
   return db
-    .prepare('SELECT id, username, active, created_at, updated_at FROM employees ORDER BY datetime(created_at) ASC')
+    .prepare('SELECT id, username, display_name, active, created_at, updated_at FROM employees ORDER BY datetime(created_at) ASC')
     .all()
     .map((row) => ({
       id: row.id,
       username: row.username,
+      displayName: sanitizeText(row.display_name || '', 60) || row.username,
       active: row.active === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -953,7 +1013,7 @@ function verifyEmployeeSession(token) {
   const row = db.prepare(`
     SELECT
       s.id, s.employee_id, s.session_token, s.expires_at, s.revoked_at,
-      e.username, e.active
+      e.username, e.display_name, e.active
     FROM employee_sessions s
     JOIN employees e ON e.id = s.employee_id
     WHERE s.session_token = ?
@@ -1019,6 +1079,7 @@ function requireEmployeeAuth(req, res, next) {
   req.employee = {
     id: verified.session.employee_id,
     username: verified.session.username,
+    displayName: sanitizeText(verified.session.display_name || '', 60) || verified.session.username,
     token: verified.session.session_token,
     expiresAt,
   };
@@ -2498,6 +2559,7 @@ app.get('/api/admin/employees', (req, res) => {
 
 app.post('/api/admin/employees', (req, res) => {
   const username = sanitizeText(req.body?.username, 40);
+  const displayName = sanitizeText(req.body?.displayName, 60) || username;
   const password = sanitizeText(req.body?.password, 120);
   if (!username || !password) {
     return res.status(400).json({ error: 'username and password are required.' });
@@ -2508,15 +2570,16 @@ app.post('/api/admin/employees', (req, res) => {
   }
   const now = nowIso();
   db.prepare(`
-    INSERT INTO employees(id, username, password_hash, active, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?)
-  `).run(createId(), username, hashEmployeePassword(password), now, now);
+    INSERT INTO employees(id, username, display_name, password_hash, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?)
+  `).run(createId(), username, displayName, hashEmployeePassword(password), now, now);
   return res.status(201).json({ ok: true, employees: getActiveEmployees() });
 });
 
 app.patch('/api/admin/employees/:id', (req, res) => {
   const employeeId = sanitizeText(req.params.id, 120);
   const username = sanitizeText(req.body?.username, 40);
+  const displayName = sanitizeText(req.body?.displayName, 60) || username;
   const password = sanitizeText(req.body?.password, 120);
   const employee = db.prepare('SELECT id, username FROM employees WHERE id = ?').get(employeeId);
   if (!employee) {
@@ -2530,11 +2593,11 @@ app.patch('/api/admin/employees/:id', (req, res) => {
     return res.status(409).json({ error: 'username already exists.' });
   }
   if (password) {
-    db.prepare('UPDATE employees SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?')
-      .run(username, hashEmployeePassword(password), nowIso(), employeeId);
+    db.prepare('UPDATE employees SET username = ?, display_name = ?, password_hash = ?, updated_at = ? WHERE id = ?')
+      .run(username, displayName, hashEmployeePassword(password), nowIso(), employeeId);
   } else {
-    db.prepare('UPDATE employees SET username = ?, updated_at = ? WHERE id = ?')
-      .run(username, nowIso(), employeeId);
+    db.prepare('UPDATE employees SET username = ?, display_name = ?, updated_at = ? WHERE id = ?')
+      .run(username, displayName, nowIso(), employeeId);
   }
   return res.json({ ok: true, employees: getActiveEmployees() });
 });
@@ -2559,7 +2622,7 @@ app.post('/api/employee/auth/login', (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ error: '请输入用户名和密码。' });
   }
-  const employee = db.prepare('SELECT id, username, password_hash, active FROM employees WHERE username = ?').get(username);
+  const employee = db.prepare('SELECT id, username, display_name, password_hash, active FROM employees WHERE username = ?').get(username);
   if (!employee || employee.active !== 1) {
     return res.status(401).json({ error: '账号或密码错误。' });
   }
@@ -2571,7 +2634,11 @@ app.post('/api/employee/auth/login', (req, res) => {
     ok: true,
     token: session.token,
     expiresAt: session.expiresAt,
-    employee: { id: employee.id, username: employee.username },
+    employee: {
+      id: employee.id,
+      username: employee.username,
+      displayName: sanitizeText(employee.display_name || '', 60) || employee.username,
+    },
   });
 });
 
@@ -2583,7 +2650,11 @@ app.post('/api/employee/auth/logout', requireEmployeeAuth, (req, res) => {
 app.get('/api/employee/auth/me', requireEmployeeAuth, (req, res) => {
   return res.json({
     ok: true,
-    employee: { id: req.employee.id, username: req.employee.username },
+    employee: {
+      id: req.employee.id,
+      username: req.employee.username,
+      displayName: req.employee.displayName || req.employee.username,
+    },
     expiresAt: req.employee.expiresAt,
   });
 });
@@ -2675,6 +2746,25 @@ app.get('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (re
   }
   const checkoutStatus = getZoneCheckoutStatus(zoneId);
   return res.json(checkoutStatus);
+});
+
+app.get('/api/employee/zones/:id/receipt', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
+  const customerName = sanitizeText(req.query.customerName, 40) || 'Guest';
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return res.status(404).json({ error: 'Zone not found.' });
+  }
+  const receipt = buildCustomerReceipt({
+    zone,
+    customerName,
+    orders: getZoneSessionOrders(zoneId),
+    employee: req.employee || null,
+  });
+  if (!receipt.items.length) {
+    return res.status(404).json({ error: '该顾客当前 session 没有可打印的项目。' });
+  }
+  return res.json({ ok: true, receipt });
 });
 
 app.patch('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (req, res) => {

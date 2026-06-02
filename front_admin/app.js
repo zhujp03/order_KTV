@@ -105,6 +105,19 @@ function canEditOrder(order) {
   return Boolean(order && !['served', 'cancelled'].includes(order.status));
 }
 
+function orderCreatedAtMs(order) {
+  const createdMs = Date.parse(order?.createdAt || '');
+  return Number.isNaN(createdMs) ? 0 : createdMs;
+}
+
+function sortOrdersFifo(orders = []) {
+  return [...orders].sort((a, b) => {
+    const createdDiff = orderCreatedAtMs(a) - orderCreatedAtMs(b);
+    if (createdDiff !== 0) return createdDiff;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  });
+}
+
 function renderOrderItems(order, { inDrawer = false } = {}) {
   const editable = canEditOrder(order);
   return order.items
@@ -149,7 +162,11 @@ function renderOrderItems(order, { inDrawer = false } = {}) {
 }
 
 function renderOrders(orders) {
-  const visibleOrders = (orders || []).filter((order) => order.status !== 'served');
+  const requestedStatus = String(statusFilterEl?.value || '');
+  const showTerminalOnly = requestedStatus === 'served' || requestedStatus === 'cancelled';
+  const visibleOrders = sortOrdersFifo((orders || []).filter((order) => (
+    showTerminalOnly ? order.status === requestedStatus : !['served', 'cancelled'].includes(order.status)
+  )));
 
   if (!visibleOrders.length) {
     ordersWrapEl.innerHTML = '<div class="card muted">当前没有订单。</div>';
@@ -157,15 +174,16 @@ function renderOrders(orders) {
   }
 
   ordersWrapEl.innerHTML = visibleOrders
-    .map((order) => {
+    .map((order, index) => {
       const statusClass = `status-${order.status}`;
       const editable = canEditOrder(order);
       const items = renderOrderItems(order);
+      const priorityText = showTerminalOnly ? '' : ` · 优先级 ${index + 1}`;
 
       return `
         <article class="order-card">
           <div class="order-head">
-            <strong>${order.zoneLabel}</strong>
+            <strong>${order.zoneLabel}${priorityText}</strong>
             <span class="badge ${statusClass}">${statusText[order.status] || order.status}</span>
           </div>
           <div class="small muted">下单人：${order.customerName || 'Guest'}</div>
@@ -453,13 +471,12 @@ function applyZoneCheckoutStatus(zoneId, checkoutStatus) {
 function formatSessionOrders(zone, orders) {
   const periodStartMs = Date.parse(zone?.accessCodeUpdatedAt || zone?.createdAt || '');
   const safeStart = Number.isNaN(periodStartMs) ? 0 : periodStartMs;
-  return orders
+  return sortOrdersFifo(orders
     .filter((order) => order.zoneId === zone.id)
     .filter((order) => {
       const createdMs = Date.parse(order.createdAt || '');
       return !Number.isNaN(createdMs) && createdMs >= safeStart;
-    })
-    .sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
+    }));
 }
 
 function renderZoneSessionOrders(zone, orders, settlements = {}) {
