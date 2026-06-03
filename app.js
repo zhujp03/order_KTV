@@ -119,6 +119,7 @@ function ceil2(value) {
 
 const TAX_RATE = 0.13;
 const SERVICE_RATE = 0.18;
+const RECEIPT_TYPE_HIDDEN = '\u200B';
 const DEFAULT_RECEIPT_VENUE_NAME = '1383 Karaoke Bar';
 const DEFAULT_RECEIPT_VENUE_ADDRESS = '1383 Clyde Ave';
 const DEFAULT_RECEIPT_VENUE_PHONE = '(613) 867-1383';
@@ -885,7 +886,7 @@ function buildCustomerReceipt({ zone, customerName, orders, employee }) {
   const tax = ceil2((subtotal + serviceCharge) * TAX_RATE);
   const total = round2(subtotal + serviceCharge + tax);
   const firstOrder = receiptOrders[0] || null;
-  const venueName = getSetting('venue_name') || DEFAULT_RECEIPT_VENUE_NAME;
+  const venueName = DEFAULT_RECEIPT_VENUE_NAME;
   const venueAddress = getSetting('venue_address') || DEFAULT_RECEIPT_VENUE_ADDRESS;
   const venuePhone = getSetting('venue_phone') || DEFAULT_RECEIPT_VENUE_PHONE;
   const serialSource = String(firstOrder?.id || `${zone?.id || ''}${safeCustomerName}${firstOrder?.createdAt || ''}`);
@@ -896,7 +897,8 @@ function buildCustomerReceipt({ zone, customerName, orders, employee }) {
     venueName,
     venueAddress,
     venuePhone,
-    receiptType: 'Dine In',
+    // Old Windows clients fall back to "Dine In" on empty strings, so keep this non-empty but invisible.
+    receiptType: RECEIPT_TYPE_HIDDEN,
     waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
     customerName: safeCustomerName,
     zoneLabel: zone?.label || '',
