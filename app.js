@@ -127,6 +127,8 @@ const PRINT_JOB_STATUS_PENDING = 'pending';
 const PRINT_JOB_STATUS_PROCESSING = 'processing';
 const PRINT_JOB_STATUS_COMPLETED = 'completed';
 const PRINT_JOB_STATUS_FAILED = 'failed';
+const BILLING_MODE_SPLIT = 'split';
+const BILLING_MODE_MERGED = 'merged';
 
 function calculateOrderGrandTotal(items = []) {
   let subtotalAll = 0;
@@ -580,6 +582,111 @@ function setSetting(key, value) {
   `).run(key, String(value), nowIso());
 }
 
+function deleteSetting(key) {
+  db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+function zoneSessionStartKey(zoneId) {
+  return `zone_session_start_at:${sanitizeText(zoneId, 100)}`;
+}
+
+function zoneBillingModeKey(zoneId, periodStartAt) {
+  return `zone_billing_mode:${sanitizeText(zoneId, 100)}:${sanitizeText(periodStartAt, 80)}`;
+}
+
+function zoneSessionOpenKey(zoneId) {
+  return `zone_session_open:${sanitizeText(zoneId, 100)}`;
+}
+
+function normalizeBillingMode(value) {
+  return sanitizeText(value, 20) === BILLING_MODE_MERGED ? BILLING_MODE_MERGED : BILLING_MODE_SPLIT;
+}
+
+function getZoneSessionStartAt(zone) {
+  if (!zone?.id) return nowIso();
+  const stored = sanitizeText(getSetting(zoneSessionStartKey(zone.id)) || '', 80);
+  return stored || zone.access_code_updated_at || zone.created_at || nowIso();
+}
+
+function resetZoneSessionStartAt(zoneId, nextStartAt = nowIso()) {
+  const safeZoneId = sanitizeText(zoneId, 100);
+  if (!safeZoneId) return nowIso();
+  const safeStart = sanitizeText(nextStartAt, 80) || nowIso();
+  setSetting(zoneSessionStartKey(safeZoneId), safeStart);
+  setSetting(zoneBillingModeKey(safeZoneId, safeStart), BILLING_MODE_SPLIT);
+  return safeStart;
+}
+
+function getZoneBillingMode(zoneId, periodStartAt) {
+  const safeZoneId = sanitizeText(zoneId, 100);
+  const safePeriodStartAt = sanitizeText(periodStartAt, 80);
+  if (!safeZoneId || !safePeriodStartAt) return BILLING_MODE_SPLIT;
+  return normalizeBillingMode(getSetting(zoneBillingModeKey(safeZoneId, safePeriodStartAt)) || '');
+}
+
+function setZoneBillingMode(zoneId, periodStartAt, billingMode) {
+  const safeZoneId = sanitizeText(zoneId, 100);
+  const safePeriodStartAt = sanitizeText(periodStartAt, 80);
+  const nextMode = normalizeBillingMode(billingMode);
+  if (!safeZoneId || !safePeriodStartAt) return nextMode;
+  setSetting(zoneBillingModeKey(safeZoneId, safePeriodStartAt), nextMode);
+  return nextMode;
+}
+
+function hasActiveZoneSessions(zoneId) {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM zone_sessions
+    WHERE zone_id = ? AND revoked_at IS NULL AND datetime(expires_at) > datetime('now')
+  `).get(zoneId);
+  return Number(row?.count || 0) > 0;
+}
+
+function inferZoneSessionOpen(zoneId) {
+  if (hasActiveZoneSessions(zoneId)) return true;
+  if (getRoomLiveCarts(zoneId).length > 0) return true;
+  const zone = getZoneById(zoneId);
+  if (!zone) return false;
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM orders
+    WHERE zone_id = ? AND datetime(created_at) >= datetime(?)
+  `).get(zoneId, periodStartAt);
+  return Number(row?.count || 0) > 0;
+}
+
+function isZoneSessionOpen(zoneId) {
+  const raw = sanitizeText(getSetting(zoneSessionOpenKey(zoneId)) || '', 8);
+  if (raw === '1' || raw === 'true') return true;
+  if (raw === '0' || raw === 'false') return false;
+  return inferZoneSessionOpen(zoneId);
+}
+
+function setZoneSessionOpen(zoneId, open) {
+  const safeZoneId = sanitizeText(zoneId, 100);
+  if (!safeZoneId) return false;
+  setSetting(zoneSessionOpenKey(safeZoneId), open ? '1' : '0');
+  return open === true;
+}
+
+function openZoneSession(zoneId, openedAt = nowIso()) {
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return { ok: false, statusCode: 404, error: 'Zone not found.' };
+  }
+  if (isZoneSessionOpen(zoneId)) {
+    return { ok: true, checkoutStatus: getZoneCheckoutStatus(zoneId), alreadyOpen: true };
+  }
+  clearAllZoneCarts(zoneId);
+  clearZoneCustomerSettlements(zoneId);
+  revokeZoneSessions(zoneId);
+  setZoneCompleted(zoneId, false);
+  resetZoneSessionStartAt(zoneId, openedAt);
+  setZoneSessionOpen(zoneId, true);
+  return { ok: true, checkoutStatus: getZoneCheckoutStatus(zoneId), alreadyOpen: false };
+}
+
 function normalizeCategoryName(value) {
   return sanitizeText(value, 40);
 }
@@ -773,7 +880,7 @@ function getZoneById(zoneId) {
 
 function getZonePeriodStartAt(zone) {
   if (!zone) return nowIso();
-  return zone.access_code_updated_at || zone.created_at || nowIso();
+  return getZoneSessionStartAt(zone);
 }
 
 function getZoneCustomerSettlements(zoneId, periodStartAt) {
@@ -850,14 +957,18 @@ function getZoneCheckoutStatus(zoneId) {
       customerNames: [],
       unsettledCustomerNames: [],
       settlements: {},
+      billingMode: BILLING_MODE_SPLIT,
+      sessionOpen: false,
       customerCount: 0,
       unsettledCustomerCount: 0,
-      canCheckout: true,
+      canCheckout: false,
     };
   }
 
   const periodStartAt = getZonePeriodStartAt(zone);
   const sessionOrders = getZoneSessionOrders(zoneId);
+  const billingMode = getZoneBillingMode(zoneId, periodStartAt);
+  const sessionOpen = isZoneSessionOpen(zoneId);
   const customerNames = [...new Set(
     sessionOrders
       .map((order) => sanitizeText(order.customerName || '', 40) || 'Guest')
@@ -872,9 +983,11 @@ function getZoneCheckoutStatus(zoneId) {
     customerNames,
     unsettledCustomerNames,
     settlements,
+    billingMode,
+    sessionOpen,
     customerCount: customerNames.length,
     unsettledCustomerCount: unsettledCustomerNames.length,
-    canCheckout: unsettledCustomerNames.length === 0,
+    canCheckout: sessionOpen && (billingMode === BILLING_MODE_MERGED ? true : unsettledCustomerNames.length === 0),
   };
 }
 
@@ -902,16 +1015,7 @@ function nextReceiptPrintCount({ zoneId, periodStartAt, customerName }) {
   return nextCount;
 }
 
-function buildCustomerReceipt({ zone, customerName, orders, employee, printCount = 1 }) {
-  const requestedCustomerName = sanitizeText(customerName, 40);
-  const safeCustomerName = requestedCustomerName && requestedCustomerName !== '未填写'
-    ? requestedCustomerName
-    : 'Guest';
-  const receiptOrders = (orders || [])
-    .filter((order) => (sanitizeText(order.customerName || '', 40) || 'Guest') === safeCustomerName)
-    .filter((order) => order.status !== 'cancelled')
-    .sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
-
+function buildReceiptItemSummary(receiptOrders = []) {
   const itemsMap = new Map();
   for (const order of receiptOrders) {
     for (const item of order.items || []) {
@@ -933,6 +1037,27 @@ function buildCustomerReceipt({ zone, customerName, orders, employee, printCount
   const serviceCharge = round2(subtotal * SERVICE_RATE);
   const tax = ceil2((subtotal + serviceCharge) * TAX_RATE);
   const total = round2(subtotal + serviceCharge + tax);
+
+  return {
+    items,
+    subtotal,
+    serviceCharge,
+    tax,
+    total,
+    rawItemCount: receiptOrders.reduce((sum, order) => sum + Number(order.items?.length || 0), 0),
+  };
+}
+
+function buildCustomerReceipt({ zone, customerName, orders, employee, printCount = 1 }) {
+  const requestedCustomerName = sanitizeText(customerName, 40);
+  const safeCustomerName = requestedCustomerName && requestedCustomerName !== '未填写'
+    ? requestedCustomerName
+    : 'Guest';
+  const receiptOrders = (orders || [])
+    .filter((order) => (sanitizeText(order.customerName || '', 40) || 'Guest') === safeCustomerName)
+    .filter((order) => order.status !== 'cancelled')
+    .sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
+  const { items, subtotal, serviceCharge, tax, total, rawItemCount } = buildReceiptItemSummary(receiptOrders);
   const firstOrder = receiptOrders[0] || null;
   const venueName = DEFAULT_RECEIPT_VENUE_NAME;
   const venueAddress = getSetting('venue_address') || DEFAULT_RECEIPT_VENUE_ADDRESS;
@@ -950,8 +1075,9 @@ function buildCustomerReceipt({ zone, customerName, orders, employee, printCount
     waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
     customerName: safeCustomerName,
     zoneLabel: formatZoneDisplayLabel(zone?.label || ''),
+    billingMode: BILLING_MODE_SPLIT,
     serial,
-    chk: `${receiptOrders.length}/${items.length}/${receiptOrders.reduce((sum, order) => sum + Number(order.items?.length || 0), 0)}`,
+    chk: `${receiptOrders.length}/${items.length}/${rawItemCount}`,
     openAt: firstOrder?.createdAt || nowIso(),
     printedAt: nowIso(),
     printCount: Math.max(1, Number(printCount || 1)),
@@ -963,6 +1089,82 @@ function buildCustomerReceipt({ zone, customerName, orders, employee, printCount
     total,
     orderCount: receiptOrders.length,
     orderIds: receiptOrders.map((order) => order.id),
+  };
+}
+
+function buildMergedReceipt({ zone, orders, employee, printCount = 1 }) {
+  const receiptOrders = (orders || [])
+    .filter((order) => order.status !== 'cancelled')
+    .sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''));
+  const { items, subtotal, serviceCharge, tax, total, rawItemCount } = buildReceiptItemSummary(receiptOrders);
+  const firstOrder = receiptOrders[0] || null;
+  const venueName = DEFAULT_RECEIPT_VENUE_NAME;
+  const venueAddress = getSetting('venue_address') || DEFAULT_RECEIPT_VENUE_ADDRESS;
+  const venuePhone = getSetting('venue_phone') || DEFAULT_RECEIPT_VENUE_PHONE;
+  const serialSource = String(firstOrder?.id || `${zone?.id || ''}${firstOrder?.createdAt || ''}${receiptOrders.length}`);
+  const serialDigits = serialSource.replace(/\D/g, '');
+  const serial = (serialDigits || `${Date.now()}`).slice(-9).padStart(9, '0');
+
+  return {
+    venueName,
+    venueAddress,
+    venuePhone,
+    receiptType: RECEIPT_TYPE_HIDDEN,
+    waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
+    customerName: '全部顾客',
+    zoneLabel: formatZoneDisplayLabel(zone?.label || ''),
+    billingMode: BILLING_MODE_MERGED,
+    serial,
+    chk: `${receiptOrders.length}/${items.length}/${rawItemCount}`,
+    openAt: firstOrder?.createdAt || nowIso(),
+    printedAt: nowIso(),
+    printCount: Math.max(1, Number(printCount || 1)),
+    gst: 0,
+    items,
+    subtotal,
+    serviceCharge,
+    tax,
+    total,
+    orderCount: receiptOrders.length,
+    orderIds: receiptOrders.map((order) => order.id),
+  };
+}
+
+function getZoneReceiptPayload({ zoneId, customerName, employee }) {
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return { ok: false, statusCode: 404, error: 'Zone not found.' };
+  }
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const billingMode = getZoneBillingMode(zoneId, periodStartAt);
+  const receiptCustomerName = billingMode === BILLING_MODE_MERGED
+    ? '全部顾客'
+    : (sanitizeText(customerName, 40) || 'Guest');
+  const printCount = nextReceiptPrintCount({
+    zoneId,
+    periodStartAt,
+    customerName: billingMode === BILLING_MODE_MERGED ? '__merged__' : receiptCustomerName,
+  });
+  const orders = getZoneSessionOrders(zoneId);
+  const receipt = billingMode === BILLING_MODE_MERGED
+    ? buildMergedReceipt({ zone, orders, employee, printCount })
+    : buildCustomerReceipt({ zone, customerName: receiptCustomerName, orders, employee, printCount });
+  if (!receipt.items.length) {
+    return {
+      ok: false,
+      statusCode: 404,
+      error: billingMode === BILLING_MODE_MERGED
+        ? '该包厢当前 session 没有可打印的项目。'
+        : '该顾客当前 session 没有可打印的项目。',
+    };
+  }
+  return {
+    ok: true,
+    zone,
+    periodStartAt,
+    billingMode,
+    receiptCustomerName,
+    receipt,
   };
 }
 
@@ -1086,6 +1288,14 @@ function finishPrintJob({ jobId, workerId, status, errorMessage = '' }) {
 
 function ensureZoneCanCheckout(zoneId) {
   const status = getZoneCheckoutStatus(zoneId);
+  if (!status.sessionOpen) {
+    return {
+      ok: false,
+      statusCode: 409,
+      error: '当前包厢尚未开台。',
+      checkoutStatus: status,
+    };
+  }
   if (status.canCheckout) {
     return { ok: true, checkoutStatus: status };
   }
@@ -1425,6 +1635,8 @@ function getZoneList(baseUrl) {
       createdAt: zone.created_at,
       activeOrderCount: Number(zone.active_order_count || 0),
       activeOrderTotal: round2(zoneTotalMap.get(zone.id) || 0),
+      billingMode: checkoutStatus.billingMode || BILLING_MODE_SPLIT,
+      sessionOpen: checkoutStatus.sessionOpen === true,
       canCheckout: checkoutStatus.canCheckout,
       unsettledCustomerCount: checkoutStatus.unsettledCustomerCount,
       accessUrl: `${baseUrl}/o/${zone.token}`,
@@ -1907,27 +2119,33 @@ function sessionRequiredResponse(res, message = 'Session expired. Please verify 
   return res.status(403).json({
     error: message,
     code: 'SESSION_REQUIRED',
-    requiresAccessCode: true,
+    requiresAccessCode: ZONE_ACCESS_CODE_REQUIRED,
+  });
+}
+
+function zoneNotOpenResponse(res, zone) {
+  return res.status(403).json({
+    error: `当前${formatZoneDisplayLabel(zone?.label || '包厢')}尚未开台，请联系员工开台后再点单。`,
+    code: 'ZONE_NOT_OPEN',
+    requiresAccessCode: false,
   });
 }
 
 function requireZoneSession(req, res, zone) {
-  if (!ZONE_ACCESS_CODE_REQUIRED) {
-    return {
-      ok: true,
-      sessionToken: '',
-      customerName: '',
-      sessionId: '',
-      cartOwnerKey: PUBLIC_CART_SESSION_ID,
-    };
+  if (!isZoneSessionOpen(zone.id)) {
+    zoneNotOpenResponse(res, zone);
+    return { ok: false };
   }
-
   const sessionToken = req.get(SESSION_HEADER_NAME) || '';
   const result = findValidZoneSession(zone.id, sessionToken);
   if (!result.ok) {
     const message = result.reason === 'expired'
-      ? 'Session expired. Please verify access code again.'
-      : 'Missing or invalid session. Please verify access code.';
+      ? (ZONE_ACCESS_CODE_REQUIRED
+        ? 'Session expired. Please verify access code again.'
+        : 'Session expired. Please enter your name again to continue.')
+      : (ZONE_ACCESS_CODE_REQUIRED
+        ? 'Missing or invalid session. Please verify access code.'
+        : 'Missing or invalid session. Please enter your name to start ordering.');
     sessionRequiredResponse(res, message);
     return { ok: false };
   }
@@ -1955,6 +2173,9 @@ app.post('/api/public/session/open', (req, res) => {
   const zone = getZoneByToken(token);
   if (!zone) {
     return res.status(404).json({ error: 'QR code is invalid or expired.' });
+  }
+  if (!isZoneSessionOpen(zone.id)) {
+    return zoneNotOpenResponse(res, zone);
   }
 
   if (ZONE_ACCESS_CODE_REQUIRED && !validateZoneAccessCode(zone, accessCode)) {
@@ -1999,31 +2220,25 @@ app.get('/api/public/context/:token', (req, res) => {
   let cart = { items: {}, note: '', updatedAt: nowIso() };
   let roomCarts = [];
   let session = null;
-  if (ZONE_ACCESS_CODE_REQUIRED) {
-    const sessionToken = req.get(SESSION_HEADER_NAME) || '';
-    const check = findValidZoneSession(zone.id, sessionToken);
-    if (check.ok) {
-      const expiresAt = touchZoneSession(check.session.id);
-      session = {
-        id: check.session.id,
-        token: check.session.session_token,
-        expiresAt,
-        customerName: sanitizeText(check.session.customer_name || '', 40),
-      };
-      cart = getSessionCart(zone.id, check.session.id);
-      roomCarts = getRoomLiveCarts(zone.id);
-    } else {
-      cart = { items: {}, note: '', updatedAt: nowIso() };
-    }
-  } else {
-    migrateLegacyZoneCartToPublic(zone.id);
-    cart = getSessionCart(zone.id, PUBLIC_CART_SESSION_ID);
-    roomCarts = getRoomLiveCarts(zone.id);
+  const sessionOpen = isZoneSessionOpen(zone.id);
+  const sessionToken = req.get(SESSION_HEADER_NAME) || '';
+  const check = sessionOpen ? findValidZoneSession(zone.id, sessionToken) : { ok: false, reason: 'closed' };
+  if (check.ok) {
+    const expiresAt = touchZoneSession(check.session.id);
+    session = {
+      id: check.session.id,
+      token: check.session.session_token,
+      expiresAt,
+      customerName: sanitizeText(check.session.customer_name || '', 40),
+    };
+    cart = getSessionCart(zone.id, check.session.id);
   }
+  roomCarts = getRoomLiveCarts(zone.id);
 
   return res.json({
     venueName,
     accessCodeRequired: ZONE_ACCESS_CODE_REQUIRED,
+    sessionOpen,
     zone: {
       id: zone.id,
       label: formatZoneDisplayLabel(zone.label),
@@ -2553,6 +2768,8 @@ app.post('/api/admin/zones', (req, res) => {
       id, label, token, access_code, access_code_updated_at, completed, completed_at, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(zone.id, zone.label, zone.token, zone.accessCode, zone.accessCodeUpdatedAt, 0, null, zone.createdAt);
+  resetZoneSessionStartAt(zone.id, zone.createdAt);
+  setZoneSessionOpen(zone.id, false);
 
   // carts are created per user session when needed
   return res.status(201).json({ ok: true, zone });
@@ -2607,6 +2824,8 @@ app.post('/api/admin/zones/:id/regenerate', (req, res) => {
   const codeUpdatedAt = nowIso();
   db.prepare('UPDATE zones SET token = ?, access_code = ?, access_code_updated_at = ? WHERE id = ?')
     .run(nextToken, nextCode, codeUpdatedAt, zoneId);
+  resetZoneSessionStartAt(zoneId, codeUpdatedAt);
+  setZoneSessionOpen(zoneId, false);
 
   const updated = getZoneById(zoneId);
 
@@ -2670,6 +2889,8 @@ app.post('/api/admin/zones/:id/checkout', (req, res) => {
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
     rotateZoneAccessCode(zoneId);
   }
+  resetZoneSessionStartAt(zoneId, checkoutAt);
+  setZoneSessionOpen(zoneId, false);
 
   const updated = getZoneById(zoneId);
   return res.json({
@@ -2698,6 +2919,8 @@ app.post('/api/admin/zones/:id/access-code/rotate', (req, res) => {
   const rotated = rotateZoneAccessCode(zoneId);
   clearZoneCustomerSettlements(zoneId);
   revokeZoneSessions(zoneId);
+  resetZoneSessionStartAt(zoneId, rotated.accessCodeUpdatedAt || nowIso());
+  setZoneSessionOpen(zoneId, false);
   const updated = getZoneById(zoneId);
   return res.json({
     ok: true,
@@ -2725,6 +2948,8 @@ app.delete('/api/admin/zones/:id', (req, res) => {
   clearAllZoneCarts(zoneId);
   clearZoneCustomerSettlements(zoneId);
   revokeZoneSessions(zoneId);
+  deleteSetting(zoneSessionStartKey(zoneId));
+  deleteSetting(zoneSessionOpenKey(zoneId));
   db.prepare('DELETE FROM zones WHERE id = ?').run(zoneId);
 
   return res.json({ ok: true });
@@ -2961,54 +3186,52 @@ app.get('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (re
   return res.json(checkoutStatus);
 });
 
-app.get('/api/employee/zones/:id/receipt', requireEmployeeAuth, (req, res) => {
+app.post('/api/employee/zones/:id/open-session', requireEmployeeAuth, (req, res) => {
   const zoneId = sanitizeText(req.params.id, 100);
-  const customerName = sanitizeText(req.query.customerName, 40) || 'Guest';
+  const result = openZoneSession(zoneId);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  return res.status(result.alreadyOpen ? 200 : 201).json({ ok: true, alreadyOpen: result.alreadyOpen === true, ...result.checkoutStatus });
+});
+
+app.patch('/api/employee/zones/:id/billing-mode', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
   const zone = getZoneById(zoneId);
   if (!zone) {
     return res.status(404).json({ error: 'Zone not found.' });
   }
   const periodStartAt = getZonePeriodStartAt(zone);
-  const printCount = nextReceiptPrintCount({ zoneId, periodStartAt, customerName });
-  const receipt = buildCustomerReceipt({
-    zone,
-    customerName,
-    orders: getZoneSessionOrders(zoneId),
-    employee: req.employee || null,
-    printCount,
-  });
-  if (!receipt.items.length) {
-    return res.status(404).json({ error: '该顾客当前 session 没有可打印的项目。' });
+  const billingMode = normalizeBillingMode(req.body?.billingMode);
+  setZoneBillingMode(zoneId, periodStartAt, billingMode);
+  const checkoutStatus = getZoneCheckoutStatus(zoneId);
+  return res.json({ ok: true, ...checkoutStatus });
+});
+
+app.get('/api/employee/zones/:id/receipt', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
+  const customerName = sanitizeText(req.query.customerName, 40) || 'Guest';
+  const result = getZoneReceiptPayload({ zoneId, customerName, employee: req.employee || null });
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
   }
-  return res.json({ ok: true, receipt });
+  return res.json({ ok: true, billingMode: result.billingMode, receipt: result.receipt });
 });
 
 app.post('/api/employee/zones/:id/receipt/print', requireEmployeeAuth, (req, res) => {
   const zoneId = sanitizeText(req.params.id, 100);
   const customerName = sanitizeText(req.body?.customerName, 40) || 'Guest';
-  const zone = getZoneById(zoneId);
-  if (!zone) {
-    return res.status(404).json({ error: 'Zone not found.' });
-  }
-  const periodStartAt = getZonePeriodStartAt(zone);
-  const printCount = nextReceiptPrintCount({ zoneId, periodStartAt, customerName });
-  const receipt = buildCustomerReceipt({
-    zone,
-    customerName,
-    orders: getZoneSessionOrders(zoneId),
-    employee: req.employee || null,
-    printCount,
-  });
-  if (!receipt.items.length) {
-    return res.status(404).json({ error: '该顾客当前 session 没有可打印的项目。' });
+  const result = getZoneReceiptPayload({ zoneId, customerName, employee: req.employee || null });
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
   }
   const job = enqueueReceiptPrintJob({
     zoneId,
-    customerName,
-    receipt,
+    customerName: result.receiptCustomerName,
+    receipt: result.receipt,
     employee: req.employee || null,
   });
-  return res.status(201).json({ ok: true, job });
+  return res.status(201).json({ ok: true, billingMode: result.billingMode, job });
 });
 
 app.post('/api/employee/print-jobs/claim', requireEmployeeAuth, (req, res) => {
@@ -3077,6 +3300,8 @@ app.post('/api/employee/zones/:id/checkout', requireEmployeeAuth, (req, res) => 
   if (ROTATE_ACCESS_CODE_ON_CHECKOUT) {
     rotateZoneAccessCode(zoneId);
   }
+  resetZoneSessionStartAt(zoneId, checkoutAt);
+  setZoneSessionOpen(zoneId, false);
   return res.json({ ok: true, clearedOrders });
 });
 

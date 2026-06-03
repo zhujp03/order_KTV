@@ -214,9 +214,13 @@ function renderZones(zones) {
     .map((zone) => {
       const unsettledCount = Number(zone.unsettledCustomerCount || 0);
       const canCheckout = zone.canCheckout !== false;
-      const checkoutHint = canCheckout
-        ? '所有顾客已结，可结单清零'
-        : `还有 ${unsettledCount} 人未结，暂不可结单`;
+      const billingMode = zone.billingMode === 'merged' ? 'merged' : 'split';
+      const sessionOpen = zone.sessionOpen === true;
+      const checkoutHint = !sessionOpen
+        ? '当前未开台，顾客扫码后暂不可点单'
+        : (canCheckout
+          ? (billingMode === 'merged' ? '合单模式，可直接整桌结单' : '所有顾客已结，可结单清零')
+          : `还有 ${unsettledCount} 人未结，暂不可结单`);
       return `
       <div class="order-card zone-card-clickable" data-zone-open="${zone.id}">
         <div class="order-head">
@@ -225,9 +229,11 @@ function renderZones(zones) {
         </div>
         <div class="zone-meta">访问码：${zone.accessCode || '----'}</div>
         <div class="zone-meta">当前未结金额：${currency(zone.activeOrderTotal || 0)}</div>
+        <div class="zone-meta">当前状态：${sessionOpen ? '已开台' : '未开台'}</div>
+        <div class="zone-meta">当前结账模式：${billingModeLabel(billingMode)}</div>
         <div class="zone-meta">${checkoutHint}</div>
         <div class="row wrap" style="margin-top: 8px">
-          <button class="warn" data-zone-action="checkout" data-id="${zone.id}" ${canCheckout ? '' : 'disabled'}>结单清零</button>
+          <button class="${sessionOpen ? 'warn' : 'secondary'}" data-zone-action="${sessionOpen ? 'checkout' : 'open-session'}" data-id="${zone.id}" ${sessionOpen && !canCheckout ? 'disabled' : ''}>${sessionOpen ? '结单清零' : '开台'}</button>
         </div>
       </div>`;
     })
@@ -368,6 +374,26 @@ async function setCustomerSettlement(zoneId, customerName, settled) {
     : { settlements: {}, unsettledCustomerNames: [], unsettledCustomerCount: 0, canCheckout: true };
 }
 
+async function startZoneSession(zoneId) {
+  const data = await employeeApiFetch(`/api/employee/zones/${encodeURIComponent(zoneId)}/open-session`, {
+    method: 'POST',
+  });
+  return data && typeof data === 'object'
+    ? data
+    : { settlements: {}, unsettledCustomerNames: [], unsettledCustomerCount: 0, canCheckout: false, sessionOpen: true, billingMode: 'split' };
+}
+
+async function setZoneBillingMode(zoneId, billingMode) {
+  const data = await employeeApiFetch(`/api/employee/zones/${encodeURIComponent(zoneId)}/billing-mode`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ billingMode }),
+  });
+  return data && typeof data === 'object'
+    ? data
+    : { settlements: {}, unsettledCustomerNames: [], unsettledCustomerCount: 0, canCheckout: true, billingMode: 'split' };
+}
+
 async function loadOrders() {
   const status = statusFilterEl.value;
   const query = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -455,21 +481,43 @@ function getZoneById(zoneId) {
   return adminState.zones.find((z) => z.id === zoneId) || null;
 }
 
+function billingModeLabel(mode) {
+  return mode === 'merged' ? '合单' : '分单';
+}
+
+function buildZoneMetaText(zone, checkoutStatus) {
+  const billingMode = checkoutStatus?.billingMode === 'merged' ? 'merged' : 'split';
+  const sessionOpen = checkoutStatus?.sessionOpen === true;
+  const base = `访问码：${zone?.accessCode || '----'} · ${sessionOpen ? '已开台' : '未开台'} · 当前模式：${billingModeLabel(billingMode)}`;
+  if (!sessionOpen) {
+    return `${base} · 顾客需等待员工开台后才能扫码点单`;
+  }
+  if (billingMode === 'merged') {
+    return `${base} · 整桌统一结账`;
+  }
+  const unsettledNames = Array.isArray(checkoutStatus?.unsettledCustomerNames)
+    ? checkoutStatus.unsettledCustomerNames.filter(Boolean)
+    : [];
+  return unsettledNames.length ? `${base} · 未结：${unsettledNames.join('、')}` : `${base} · 所有人已结`;
+}
+
 function applyZoneCheckoutStatus(zoneId, checkoutStatus) {
   if (!zoneId || !checkoutStatus) return;
   adminState.zones = adminState.zones.map((zone) => {
     if (zone.id !== zoneId) return zone;
-    return {
-      ...zone,
-      canCheckout: checkoutStatus.canCheckout !== false,
-      unsettledCustomerCount: Number(checkoutStatus.unsettledCustomerCount || 0),
-    };
+      return {
+        ...zone,
+        billingMode: checkoutStatus.billingMode === 'merged' ? 'merged' : 'split',
+        sessionOpen: checkoutStatus.sessionOpen === true,
+        canCheckout: checkoutStatus.canCheckout !== false,
+        unsettledCustomerCount: Number(checkoutStatus.unsettledCustomerCount || 0),
+      };
   });
   renderZones(adminState.zones);
 }
 
-function formatSessionOrders(zone, orders) {
-  const periodStartMs = Date.parse(zone?.accessCodeUpdatedAt || zone?.createdAt || '');
+function formatSessionOrders(zone, orders, periodStartAt = '') {
+  const periodStartMs = Date.parse(periodStartAt || zone?.accessCodeUpdatedAt || zone?.createdAt || '');
   const safeStart = Number.isNaN(periodStartMs) ? 0 : periodStartMs;
   return sortOrdersFifo(orders
     .filter((order) => order.zoneId === zone.id)
@@ -479,9 +527,60 @@ function formatSessionOrders(zone, orders) {
     }));
 }
 
-function renderZoneSessionOrders(zone, orders, settlements = {}) {
+function renderZoneSessionOrders(zone, orders, settlements = {}, checkoutStatus = null) {
+  const billingMode = checkoutStatus?.billingMode === 'merged' ? 'merged' : 'split';
+  const sessionOpen = checkoutStatus?.sessionOpen === true;
+  const modeCard = `
+    <section class="card">
+      <div class="row wrap" style="justify-content:space-between;align-items:center;gap:8px;">
+        <div>
+          <h3 style="margin:0;">当前状态：${sessionOpen ? '已开台' : '未开台'}</h3>
+          <div class="small muted">${sessionOpen ? (billingMode === 'merged' ? '整桌统一结账，打印整桌合单。' : '按顾客分单，全部已结后才可结单。') : '顾客扫码后会先看到“未开台”，员工点击开台后才可进入当前 session。'}</div>
+        </div>
+        ${sessionOpen ? `
+          <button
+            type="button"
+            class="light"
+            data-zone-session-action="toggle-billing-mode"
+            data-billing-mode-next="${billingMode === 'merged' ? 'split' : 'merged'}"
+          >${billingMode === 'merged' ? '改成分单' : '改成合单'}</button>
+        ` : `
+          <button
+            type="button"
+            class="secondary"
+            data-zone-session-action="open-session"
+          >开台</button>
+        `}
+      </div>
+    </section>
+  `;
   if (!orders.length) {
-    zoneSessionOrdersWrapEl.innerHTML = '<div class="card muted">该包厢当前 session 暂无订单。</div>';
+    zoneSessionOrdersWrapEl.innerHTML = `${modeCard}<div class="card muted">该包厢当前 session 暂无订单。</div>`;
+    return;
+  }
+  if (billingMode === 'merged') {
+    const ordersHtml = orders
+      .map((order) => {
+        const items = renderOrderItems(order, { inDrawer: true });
+        const editable = canEditOrder(order);
+        return `
+          <article class="order-card">
+            <div class="order-head">
+              <strong>${order.customerName || 'Guest'} · #${order.id.slice(0, 8)}</strong>
+              <span class="badge status-${order.status}">${statusText[order.status] || order.status}</span>
+            </div>
+            <div class="small muted">${formatTime(order.createdAt)}</div>
+            <ul class="order-item-list">${items}</ul>
+            <div><strong>合计 ${currency(order.total)}</strong></div>
+            <div class="small">备注：${order.note || '无'}</div>
+            <div class="row wrap" style="margin-top:8px;">
+              <button type="button" class="light" data-order-action="add-item" data-id="${order.id}" ${editable ? '' : 'disabled'}>加菜</button>
+            </div>
+          </article>
+        `;
+      })
+      .join('');
+    zoneSessionOrdersWrapEl.innerHTML = `${modeCard}<section class="card"><div class="grid" style="margin-top:0;">${ordersHtml}</div></section>`;
     return;
   }
   const groups = new Map();
@@ -491,7 +590,7 @@ function renderZoneSessionOrders(zone, orders, settlements = {}) {
     groups.get(key).push(order);
   }
 
-  zoneSessionOrdersWrapEl.innerHTML = [...groups.entries()]
+  zoneSessionOrdersWrapEl.innerHTML = modeCard + [...groups.entries()]
     .map(([customerName, customerOrders]) => {
       const settleInfo = settlements[customerName] || null;
       const isSettled = Boolean(settleInfo?.settled);
@@ -592,12 +691,12 @@ async function refreshZoneSessionDrawer() {
     canCheckout: checkoutStatus?.canCheckout !== false,
   };
   applyZoneCheckoutStatus(zone.id, adminState.zoneCheckoutStatus);
-  zoneSessionMetaEl.textContent = unsettledNames.length
-    ? `访问码：${zone.accessCode || '----'} · 未结：${unsettledNames.join('、')}`
-    : `访问码：${zone.accessCode || '----'} · 所有人已结`;
-  zoneSessionCheckoutBtnEl.disabled = adminState.zoneCheckoutStatus.canCheckout === false;
-  const sessionOrders = formatSessionOrders(zone, orders);
-  renderZoneSessionOrders(zone, sessionOrders, settlements);
+  zoneSessionMetaEl.textContent = buildZoneMetaText(zone, adminState.zoneCheckoutStatus);
+  zoneSessionCheckoutBtnEl.textContent = adminState.zoneCheckoutStatus.sessionOpen === true ? '结单清零' : '开台';
+  zoneSessionCheckoutBtnEl.className = adminState.zoneCheckoutStatus.sessionOpen === true ? 'warn' : 'secondary';
+  zoneSessionCheckoutBtnEl.disabled = adminState.zoneCheckoutStatus.sessionOpen === true ? adminState.zoneCheckoutStatus.canCheckout === false : false;
+  const sessionOrders = formatSessionOrders(zone, orders, adminState.zoneCheckoutStatus.periodStartAt);
+  renderZoneSessionOrders(zone, sessionOrders, settlements, adminState.zoneCheckoutStatus);
 }
 
 async function loadAll() {
@@ -727,6 +826,12 @@ zoneTodoWrapEl.addEventListener('click', async (event) => {
       const result = await checkoutZone(zoneId);
       alert(`结单完成，已清空 ${result.clearedOrders} 笔订单。`);
       await loadAll();
+      return;
+    }
+    if (action === 'open-session') {
+      await startZoneSession(zoneId);
+      alert('已开台，顾客现在可以用现有二维码扫码进入。');
+      await loadAll();
     }
   } catch (error) {
     alert(`操作失败：${error.message}`);
@@ -767,6 +872,59 @@ zoneSessionOrdersWrapEl.addEventListener('click', async (event) => {
     return;
   }
 
+  const modeButton = event.target.closest('button[data-zone-session-action="toggle-billing-mode"]');
+  if (modeButton) {
+    const zoneId = adminState.selectedZoneId;
+    if (!zoneId) return;
+    modeButton.disabled = true;
+    try {
+      const checkoutStatus = await setZoneBillingMode(zoneId, modeButton.dataset.billingModeNext);
+      const settlements = checkoutStatus?.settlements && typeof checkoutStatus.settlements === 'object'
+        ? checkoutStatus.settlements
+        : {};
+      adminState.zoneCustomerSettlements = settlements;
+      adminState.zoneCheckoutStatus = {
+        ...checkoutStatus,
+        settlements,
+        unsettledCustomerNames: Array.isArray(checkoutStatus?.unsettledCustomerNames)
+          ? checkoutStatus.unsettledCustomerNames.filter(Boolean)
+          : [],
+        canCheckout: checkoutStatus?.canCheckout !== false,
+      };
+      const zone = getZoneById(zoneId);
+      if (!zone) return;
+      applyZoneCheckoutStatus(zone.id, adminState.zoneCheckoutStatus);
+      zoneSessionMetaEl.textContent = buildZoneMetaText(zone, adminState.zoneCheckoutStatus);
+      zoneSessionCheckoutBtnEl.disabled = adminState.zoneCheckoutStatus.canCheckout === false;
+      const orders = await fetchAllActiveOrders();
+      const sessionOrders = formatSessionOrders(zone, orders, adminState.zoneCheckoutStatus.periodStartAt);
+      renderZoneSessionOrders(zone, sessionOrders, settlements, adminState.zoneCheckoutStatus);
+    } catch (error) {
+      alert(`切换结账模式失败：${error.message}`);
+      modeButton.disabled = false;
+    }
+    return;
+  }
+
+  const openButton = event.target.closest('button[data-zone-session-action="open-session"]');
+  if (openButton) {
+    const zoneId = adminState.selectedZoneId;
+    if (!zoneId) return;
+    openButton.disabled = true;
+    try {
+      await startZoneSession(zoneId);
+      const zone = getZoneById(zoneId);
+      if (zone) {
+        await refreshZoneSessionDrawer();
+      }
+      alert('已开台，顾客现在可以用现有二维码扫码进入。');
+    } catch (error) {
+      alert(`开台失败：${error.message}`);
+      openButton.disabled = false;
+    }
+    return;
+  }
+
   const button = event.target.closest('button[data-zone-session-action="toggle-settlement"]');
   if (!button) return;
   const zoneId = adminState.selectedZoneId;
@@ -794,13 +952,11 @@ zoneSessionOrdersWrapEl.addEventListener('click', async (event) => {
     const zone = getZoneById(zoneId);
     if (!zone) return;
     applyZoneCheckoutStatus(zone.id, adminState.zoneCheckoutStatus);
-    zoneSessionMetaEl.textContent = adminState.zoneCheckoutStatus.unsettledCustomerNames.length
-      ? `访问码：${zone.accessCode || '----'} · 未结：${adminState.zoneCheckoutStatus.unsettledCustomerNames.join('、')}`
-      : `访问码：${zone.accessCode || '----'} · 所有人已结`;
+    zoneSessionMetaEl.textContent = buildZoneMetaText(zone, adminState.zoneCheckoutStatus);
     zoneSessionCheckoutBtnEl.disabled = adminState.zoneCheckoutStatus.canCheckout === false;
     const orders = await fetchAllActiveOrders();
-    const sessionOrders = formatSessionOrders(zone, orders);
-    renderZoneSessionOrders(zone, sessionOrders, settlements);
+    const sessionOrders = formatSessionOrders(zone, orders, adminState.zoneCheckoutStatus.periodStartAt);
+    renderZoneSessionOrders(zone, sessionOrders, settlements, adminState.zoneCheckoutStatus);
   } catch (error) {
     alert(`更新结账状态失败：${error.message}`);
     button.disabled = false;
@@ -824,12 +980,18 @@ orderItemMenuListEl.addEventListener('click', async (event) => {
 zoneSessionCheckoutBtnEl.addEventListener('click', async () => {
   const zoneId = adminState.selectedZoneId;
   if (!zoneId) return;
-  const ok = confirm('结单后该桌/包厢的订单会自动删除清零，确认吗？');
-  if (!ok) return;
   try {
-    const result = await checkoutZone(zoneId);
-    alert(`结单完成，已清空 ${result.clearedOrders} 笔订单。`);
-    closeZoneSessionDrawer();
+    const zone = getZoneById(zoneId);
+    if (zone?.sessionOpen === true) {
+      const ok = confirm('结单后该桌/包厢的订单会自动删除清零，确认吗？');
+      if (!ok) return;
+      const result = await checkoutZone(zoneId);
+      alert(`结单完成，已清空 ${result.clearedOrders} 笔订单。`);
+      closeZoneSessionDrawer();
+    } else {
+      await startZoneSession(zoneId);
+      alert('已开台，顾客现在可以用现有二维码扫码进入。');
+    }
     await loadAll();
   } catch (error) {
     alert(`操作失败：${error.message}`);
