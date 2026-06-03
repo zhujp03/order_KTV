@@ -119,6 +119,13 @@ function ceil2(value) {
 
 const TAX_RATE = 0.13;
 const SERVICE_RATE = 0.18;
+const DEFAULT_RECEIPT_VENUE_NAME = '1383 Karaoke Bar';
+const DEFAULT_RECEIPT_VENUE_ADDRESS = '1383 Clyde Ave';
+const DEFAULT_RECEIPT_VENUE_PHONE = '(613) 867-1383';
+const PRINT_JOB_STATUS_PENDING = 'pending';
+const PRINT_JOB_STATUS_PROCESSING = 'processing';
+const PRINT_JOB_STATUS_COMPLETED = 'completed';
+const PRINT_JOB_STATUS_FAILED = 'failed';
 
 function calculateOrderGrandTotal(items = []) {
   let subtotalAll = 0;
@@ -454,6 +461,23 @@ CREATE TABLE IF NOT EXISTS zone_customer_settlements (
   FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS print_jobs (
+  id TEXT PRIMARY KEY,
+  zone_id TEXT NOT NULL,
+  customer_name TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_by_employee_id TEXT NOT NULL DEFAULT '',
+  requested_by_employee_username TEXT NOT NULL DEFAULT '',
+  claimed_by TEXT NOT NULL DEFAULT '',
+  claimed_at TEXT,
+  completed_at TEXT,
+  error_message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_zones_token ON zones(token);
 CREATE INDEX IF NOT EXISTS idx_orders_zone_id ON orders(zone_id);
 CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
@@ -467,6 +491,7 @@ CREATE INDEX IF NOT EXISTS idx_session_carts_zone_id ON session_carts(zone_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_employee_id ON employee_sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_token ON employee_sessions(session_token);
 CREATE INDEX IF NOT EXISTS idx_zone_customer_settlements_zone_period ON zone_customer_settlements(zone_id, period_start_at);
+CREATE INDEX IF NOT EXISTS idx_print_jobs_status_created_at ON print_jobs(status, created_at ASC);
 `);
 
 function hasColumn(tableName, columnName) {
@@ -860,19 +885,27 @@ function buildCustomerReceipt({ zone, customerName, orders, employee }) {
   const tax = ceil2((subtotal + serviceCharge) * TAX_RATE);
   const total = round2(subtotal + serviceCharge + tax);
   const firstOrder = receiptOrders[0] || null;
-  const venueName = getSetting('venue_name') || 'Universal Order System';
+  const venueName = getSetting('venue_name') || DEFAULT_RECEIPT_VENUE_NAME;
+  const venueAddress = getSetting('venue_address') || DEFAULT_RECEIPT_VENUE_ADDRESS;
+  const venuePhone = getSetting('venue_phone') || DEFAULT_RECEIPT_VENUE_PHONE;
+  const serialSource = String(firstOrder?.id || `${zone?.id || ''}${safeCustomerName}${firstOrder?.createdAt || ''}`);
+  const serialDigits = serialSource.replace(/\D/g, '');
+  const serial = (serialDigits || `${Date.now()}`).slice(-9).padStart(9, '0');
 
   return {
     venueName,
+    venueAddress,
+    venuePhone,
     receiptType: 'Dine In',
     waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
     customerName: safeCustomerName,
     zoneLabel: zone?.label || '',
-    serial: `${String(zone?.id || '').slice(0, 8)}-${safeCustomerName.slice(0, 6)}`,
+    serial,
     chk: `${receiptOrders.length}/${items.length}/${receiptOrders.reduce((sum, order) => sum + Number(order.items?.length || 0), 0)}`,
     openAt: firstOrder?.createdAt || nowIso(),
     printedAt: nowIso(),
     printCount: 1,
+    gst: 0,
     items,
     subtotal,
     serviceCharge,
@@ -880,6 +913,124 @@ function buildCustomerReceipt({ zone, customerName, orders, employee }) {
     total,
     orderCount: receiptOrders.length,
     orderIds: receiptOrders.map((order) => order.id),
+  };
+}
+
+function parsePrintJobRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    zoneId: row.zone_id,
+    customerName: row.customer_name,
+    status: row.status,
+    requestedByEmployeeId: row.requested_by_employee_id,
+    requestedByEmployeeUsername: row.requested_by_employee_username,
+    claimedBy: row.claimed_by,
+    claimedAt: row.claimed_at,
+    completedAt: row.completed_at,
+    errorMessage: row.error_message || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    receipt: safeJsonParse(row.receipt_json, null),
+  };
+}
+
+function enqueueReceiptPrintJob({ zoneId, customerName, receipt, employee }) {
+  const jobId = createId();
+  const now = nowIso();
+  db.prepare(`
+    INSERT INTO print_jobs(
+      id, zone_id, customer_name, receipt_json, status,
+      requested_by_employee_id, requested_by_employee_username,
+      claimed_by, claimed_at, completed_at, error_message,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, '', NULL, NULL, '', ?, ?)
+  `).run(
+    jobId,
+    zoneId,
+    customerName,
+    JSON.stringify(receipt),
+    PRINT_JOB_STATUS_PENDING,
+    sanitizeText(employee?.id || '', 120),
+    sanitizeText(employee?.username || '', 60),
+    now,
+    now,
+  );
+  return parsePrintJobRow(db.prepare('SELECT * FROM print_jobs WHERE id = ?').get(jobId));
+}
+
+const claimNextPrintJobTx = db.transaction((workerId) => {
+  const nextRow = db.prepare(`
+    SELECT *
+    FROM print_jobs
+    WHERE status = ?
+    ORDER BY datetime(created_at) ASC, id ASC
+    LIMIT 1
+  `).get(PRINT_JOB_STATUS_PENDING);
+  if (!nextRow) return null;
+
+  const now = nowIso();
+  const updateResult = db.prepare(`
+    UPDATE print_jobs
+    SET status = ?, claimed_by = ?, claimed_at = ?, updated_at = ?, error_message = ''
+    WHERE id = ? AND status = ?
+  `).run(
+    PRINT_JOB_STATUS_PROCESSING,
+    workerId,
+    now,
+    now,
+    nextRow.id,
+    PRINT_JOB_STATUS_PENDING,
+  );
+  if (updateResult.changes !== 1) {
+    return null;
+  }
+
+  return parsePrintJobRow(db.prepare('SELECT * FROM print_jobs WHERE id = ?').get(nextRow.id));
+});
+
+function claimNextPrintJob(workerId) {
+  const safeWorkerId = sanitizeText(workerId, 120);
+  if (!safeWorkerId) return null;
+  for (let i = 0; i < 3; i += 1) {
+    const claimed = claimNextPrintJobTx(safeWorkerId);
+    if (claimed) return claimed;
+  }
+  return null;
+}
+
+function finishPrintJob({ jobId, workerId, status, errorMessage = '' }) {
+  const safeJobId = sanitizeText(jobId, 120);
+  const safeWorkerId = sanitizeText(workerId, 120);
+  const safeStatus = sanitizeText(status, 40);
+  if (!safeJobId || !safeWorkerId) {
+    return { ok: false, statusCode: 400, error: 'invalid print job payload' };
+  }
+  if (![PRINT_JOB_STATUS_COMPLETED, PRINT_JOB_STATUS_FAILED].includes(safeStatus)) {
+    return { ok: false, statusCode: 400, error: `invalid print job status: ${safeStatus}` };
+  }
+
+  const now = nowIso();
+  const result = db.prepare(`
+    UPDATE print_jobs
+    SET status = ?, completed_at = ?, updated_at = ?, error_message = ?
+    WHERE id = ? AND status = ? AND claimed_by = ?
+  `).run(
+    safeStatus,
+    now,
+    now,
+    sanitizeText(errorMessage, 240),
+    safeJobId,
+    PRINT_JOB_STATUS_PROCESSING,
+    safeWorkerId,
+  );
+  if (result.changes !== 1) {
+    return { ok: false, statusCode: 409, error: 'print job is not claimable by this worker' };
+  }
+
+  return {
+    ok: true,
+    job: parsePrintJobRow(db.prepare('SELECT * FROM print_jobs WHERE id = ?').get(safeJobId)),
   };
 }
 
@@ -1056,6 +1207,12 @@ function recalculateOrderTotal(orderId) {
   const total = calculateOrderGrandTotal(items);
   db.prepare('UPDATE orders SET total = ?, updated_at = ? WHERE id = ?').run(total, nowIso(), orderId);
   return total;
+}
+
+function zeroOutOrderAmounts(orderId) {
+  const updatedAt = nowIso();
+  db.prepare('UPDATE order_items SET subtotal = 0 WHERE order_id = ?').run(orderId);
+  db.prepare('UPDATE orders SET total = 0, updated_at = ? WHERE id = ?').run(updatedAt, orderId);
 }
 
 function getEditableOrderOrError(orderId) {
@@ -1505,7 +1662,13 @@ function seedDefaultsIfNeeded() {
   }
 
   if (!getSetting('venue_name')) {
-    setSetting('venue_name', 'Universal Order System');
+    setSetting('venue_name', DEFAULT_RECEIPT_VENUE_NAME);
+  }
+  if (!getSetting('venue_address')) {
+    setSetting('venue_address', DEFAULT_RECEIPT_VENUE_ADDRESS);
+  }
+  if (!getSetting('venue_phone')) {
+    setSetting('venue_phone', DEFAULT_RECEIPT_VENUE_PHONE);
   }
   if (!getSetting('privacy_mode')) {
     setSetting('privacy_mode', 'true');
@@ -2767,6 +2930,52 @@ app.get('/api/employee/zones/:id/receipt', requireEmployeeAuth, (req, res) => {
   return res.json({ ok: true, receipt });
 });
 
+app.post('/api/employee/zones/:id/receipt/print', requireEmployeeAuth, (req, res) => {
+  const zoneId = sanitizeText(req.params.id, 100);
+  const customerName = sanitizeText(req.body?.customerName, 40) || 'Guest';
+  const zone = getZoneById(zoneId);
+  if (!zone) {
+    return res.status(404).json({ error: 'Zone not found.' });
+  }
+  const receipt = buildCustomerReceipt({
+    zone,
+    customerName,
+    orders: getZoneSessionOrders(zoneId),
+    employee: req.employee || null,
+  });
+  if (!receipt.items.length) {
+    return res.status(404).json({ error: '该顾客当前 session 没有可打印的项目。' });
+  }
+  const job = enqueueReceiptPrintJob({
+    zoneId,
+    customerName,
+    receipt,
+    employee: req.employee || null,
+  });
+  return res.status(201).json({ ok: true, job });
+});
+
+app.post('/api/employee/print-jobs/claim', requireEmployeeAuth, (req, res) => {
+  const workerId = sanitizeText(req.body?.workerId, 120);
+  if (!workerId) {
+    return res.status(400).json({ error: 'workerId is required.' });
+  }
+  const job = claimNextPrintJob(workerId);
+  return res.json({ ok: true, job });
+});
+
+app.patch('/api/employee/print-jobs/:id', requireEmployeeAuth, (req, res) => {
+  const jobId = sanitizeText(req.params.id, 120);
+  const workerId = sanitizeText(req.body?.workerId, 120);
+  const status = sanitizeText(req.body?.status, 40);
+  const errorMessage = sanitizeText(req.body?.errorMessage, 240);
+  const result = finishPrintJob({ jobId, workerId, status, errorMessage });
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  return res.json({ ok: true, job: result.job });
+});
+
 app.patch('/api/employee/zones/:id/customer-settlements', requireEmployeeAuth, (req, res) => {
   const zoneId = sanitizeText(req.params.id, 100);
   const zone = getZoneById(zoneId);
@@ -2841,6 +3050,9 @@ function patchOrderStatus(orderId, status, actor = null) {
     `).run(status, nowIso(), actor.id, actor.username, orderId);
   } else {
     db.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?').run(status, nowIso(), orderId);
+  }
+  if (status === 'cancelled') {
+    zeroOutOrderAmounts(orderId);
   }
   const updatedOrder = getOrderWithItems({ history: false }).find((o) => o.id === orderId);
   return { ok: true, order: updatedOrder };
