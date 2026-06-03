@@ -462,6 +462,16 @@ CREATE TABLE IF NOT EXISTS zone_customer_settlements (
   FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS receipt_print_counters (
+  zone_id TEXT NOT NULL,
+  customer_name TEXT NOT NULL,
+  period_start_at TEXT NOT NULL,
+  print_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(zone_id, customer_name, period_start_at),
+  FOREIGN KEY(zone_id) REFERENCES zones(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS print_jobs (
   id TEXT PRIMARY KEY,
   zone_id TEXT NOT NULL,
@@ -492,6 +502,7 @@ CREATE INDEX IF NOT EXISTS idx_session_carts_zone_id ON session_carts(zone_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_employee_id ON employee_sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_employee_sessions_token ON employee_sessions(session_token);
 CREATE INDEX IF NOT EXISTS idx_zone_customer_settlements_zone_period ON zone_customer_settlements(zone_id, period_start_at);
+CREATE INDEX IF NOT EXISTS idx_receipt_print_counters_zone_period ON receipt_print_counters(zone_id, period_start_at);
 CREATE INDEX IF NOT EXISTS idx_print_jobs_status_created_at ON print_jobs(status, created_at ASC);
 `);
 
@@ -854,7 +865,31 @@ function getZoneCheckoutStatus(zoneId) {
   };
 }
 
-function buildCustomerReceipt({ zone, customerName, orders, employee }) {
+function nextReceiptPrintCount({ zoneId, periodStartAt, customerName }) {
+  const safeZoneId = sanitizeText(zoneId, 100);
+  const safePeriodStartAt = sanitizeText(periodStartAt, 80);
+  const safeCustomerName = sanitizeText(customerName, 40) || 'Guest';
+  if (!safeZoneId || !safePeriodStartAt) return 1;
+
+  const existing = db.prepare(`
+    SELECT print_count
+    FROM receipt_print_counters
+    WHERE zone_id = ? AND customer_name = ? AND period_start_at = ?
+  `).get(safeZoneId, safeCustomerName, safePeriodStartAt);
+
+  const nextCount = Math.max(0, Number(existing?.print_count || 0)) + 1;
+  db.prepare(`
+    INSERT INTO receipt_print_counters(zone_id, customer_name, period_start_at, print_count, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(zone_id, customer_name, period_start_at) DO UPDATE SET
+      print_count = excluded.print_count,
+      updated_at = excluded.updated_at
+  `).run(safeZoneId, safeCustomerName, safePeriodStartAt, nextCount, nowIso());
+
+  return nextCount;
+}
+
+function buildCustomerReceipt({ zone, customerName, orders, employee, printCount = 1 }) {
   const requestedCustomerName = sanitizeText(customerName, 40);
   const safeCustomerName = requestedCustomerName && requestedCustomerName !== '未填写'
     ? requestedCustomerName
@@ -906,7 +941,7 @@ function buildCustomerReceipt({ zone, customerName, orders, employee }) {
     chk: `${receiptOrders.length}/${items.length}/${receiptOrders.reduce((sum, order) => sum + Number(order.items?.length || 0), 0)}`,
     openAt: firstOrder?.createdAt || nowIso(),
     printedAt: nowIso(),
-    printCount: 1,
+    printCount: Math.max(1, Number(printCount || 1)),
     gst: 0,
     items,
     subtotal,
@@ -2920,11 +2955,14 @@ app.get('/api/employee/zones/:id/receipt', requireEmployeeAuth, (req, res) => {
   if (!zone) {
     return res.status(404).json({ error: 'Zone not found.' });
   }
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const printCount = nextReceiptPrintCount({ zoneId, periodStartAt, customerName });
   const receipt = buildCustomerReceipt({
     zone,
     customerName,
     orders: getZoneSessionOrders(zoneId),
     employee: req.employee || null,
+    printCount,
   });
   if (!receipt.items.length) {
     return res.status(404).json({ error: '该顾客当前 session 没有可打印的项目。' });
@@ -2939,11 +2977,14 @@ app.post('/api/employee/zones/:id/receipt/print', requireEmployeeAuth, (req, res
   if (!zone) {
     return res.status(404).json({ error: 'Zone not found.' });
   }
+  const periodStartAt = getZonePeriodStartAt(zone);
+  const printCount = nextReceiptPrintCount({ zoneId, periodStartAt, customerName });
   const receipt = buildCustomerReceipt({
     zone,
     customerName,
     orders: getZoneSessionOrders(zoneId),
     employee: req.employee || null,
+    printCount,
   });
   if (!receipt.items.length) {
     return res.status(404).json({ error: '该顾客当前 session 没有可打印的项目。' });
