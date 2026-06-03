@@ -1111,7 +1111,7 @@ function buildMergedReceipt({ zone, orders, employee, printCount = 1 }) {
     venuePhone,
     receiptType: RECEIPT_TYPE_HIDDEN,
     waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
-    customerName: '全部顾客',
+    customerName: 'Whole room',
     zoneLabel: formatZoneDisplayLabel(zone?.label || ''),
     billingMode: BILLING_MODE_MERGED,
     serial,
