@@ -113,6 +113,14 @@ function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function moneyToCents(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100);
+}
+
+function centsToMoney(cents) {
+  return Number(cents || 0) / 100;
+}
+
 function ceil2(value) {
   return Math.ceil((Number(value) + Number.EPSILON) * 100) / 100;
 }
@@ -131,18 +139,15 @@ const BILLING_MODE_SPLIT = 'split';
 const BILLING_MODE_MERGED = 'merged';
 
 function calculateOrderGrandTotal(items = []) {
-  let subtotalAll = 0;
-  let serviceAll = 0;
-  let taxAll = 0;
+  let subtotalCents = 0;
   for (const item of items) {
-    const subtotal = round2(Number(item?.subtotal) || 0);
-    const service = round2(subtotal * SERVICE_RATE);
-    const tax = ceil2((subtotal + service) * TAX_RATE);
-    subtotalAll += subtotal;
-    serviceAll += service;
-    taxAll += tax;
+    subtotalCents += moneyToCents(Number(item?.subtotal) || 0);
   }
-  return round2(round2(subtotalAll) + round2(serviceAll) + round2(taxAll));
+  const subtotal = centsToMoney(subtotalCents);
+  const serviceCharge = centsToMoney(moneyToCents(subtotal * SERVICE_RATE));
+  const tax = centsToMoney(moneyToCents((subtotal + serviceCharge) * TAX_RATE));
+  const totalCents = subtotalCents + moneyToCents(serviceCharge) + moneyToCents(tax);
+  return centsToMoney(totalCents);
 }
 
 function safeJsonParse(text, fallback) {
@@ -1024,19 +1029,25 @@ function buildReceiptItemSummary(receiptOrders = []) {
         name: item.name || 'Item',
         price: round2(item.price),
         quantity: 0,
-        subtotal: 0,
+        subtotalCents: 0,
       };
       existing.quantity += Number(item.quantity || 0);
-      existing.subtotal = round2(existing.subtotal + Number(item.subtotal || 0));
+      existing.subtotalCents += moneyToCents(Number(item.subtotal || 0));
       itemsMap.set(key, existing);
     }
   }
 
-  const items = Array.from(itemsMap.values());
-  const subtotal = round2(items.reduce((sum, item) => sum + Number(item.subtotal || 0), 0));
-  const serviceCharge = round2(subtotal * SERVICE_RATE);
-  const tax = ceil2((subtotal + serviceCharge) * TAX_RATE);
-  const total = round2(subtotal + serviceCharge + tax);
+  const items = Array.from(itemsMap.values()).map((item) => ({
+    name: item.name,
+    price: round2(item.price),
+    quantity: item.quantity,
+    subtotal: centsToMoney(item.subtotalCents),
+  }));
+  const subtotalCents = items.reduce((sum, item) => sum + moneyToCents(item.subtotal), 0);
+  const subtotal = centsToMoney(subtotalCents);
+  const serviceCharge = centsToMoney(moneyToCents(subtotal * SERVICE_RATE));
+  const tax = centsToMoney(moneyToCents((subtotal + serviceCharge) * TAX_RATE));
+  const total = centsToMoney(subtotalCents + moneyToCents(serviceCharge) + moneyToCents(tax));
 
   return {
     items,
@@ -1618,8 +1629,8 @@ function getZoneList(baseUrl) {
   const activeOrders = getOrderWithItems();
   const zoneTotalMap = new Map();
   for (const order of activeOrders) {
-    const total = calculateOrderGrandTotal(order.items || []);
-    zoneTotalMap.set(order.zoneId, round2((zoneTotalMap.get(order.zoneId) || 0) + total));
+    const totalCents = moneyToCents(calculateOrderGrandTotal(order.items || []));
+    zoneTotalMap.set(order.zoneId, (zoneTotalMap.get(order.zoneId) || 0) + totalCents);
   }
 
   return zones.map((zone) => {
@@ -1634,7 +1645,7 @@ function getZoneList(baseUrl) {
       completedAt: zone.completed_at || null,
       createdAt: zone.created_at,
       activeOrderCount: Number(zone.active_order_count || 0),
-      activeOrderTotal: round2(zoneTotalMap.get(zone.id) || 0),
+      activeOrderTotal: centsToMoney(zoneTotalMap.get(zone.id) || 0),
       billingMode: checkoutStatus.billingMode || BILLING_MODE_SPLIT,
       sessionOpen: checkoutStatus.sessionOpen === true,
       canCheckout: checkoutStatus.canCheckout,
@@ -3486,7 +3497,7 @@ app.get('/api/admin/orders/by-day', (req, res) => {
     })
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-  const totalAmount = round2(orders.reduce((sum, order) => sum + Number(order.total || 0), 0));
+  const totalAmount = centsToMoney(orders.reduce((sum, order) => sum + moneyToCents(order.total || 0), 0));
   const statusCount = {
     new: 0,
     preparing: 0,
