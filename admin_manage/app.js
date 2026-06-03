@@ -441,7 +441,7 @@ function parseBatchZoneInput(raw) {
 function buildBatchLabels(type, count) {
   const labels = [];
   for (let i = 1; i <= count; i += 1) {
-    labels.push(type === 'room' ? `${i}包` : `${i}号桌`);
+    labels.push(type === 'room' ? `Room ${i}` : `${i}号桌`);
   }
   return labels;
 }

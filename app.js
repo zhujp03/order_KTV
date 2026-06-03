@@ -209,6 +209,19 @@ function defaultZones() {
   ];
 }
 
+function formatZoneDisplayLabel(rawLabel) {
+  const label = String(rawLabel || '').trim();
+  if (!label) return 'Room';
+  if (/桌|table/i.test(label)) return label;
+
+  const numberMatch = label.match(/\d+/);
+  if (/room|包厢|包间|包房|包|vip/i.test(label)) {
+    return numberMatch ? `Room ${numberMatch[0]}` : `Room ${label}`;
+  }
+
+  return label;
+}
+
 const dbDir = path.dirname(DB_PATH);
 if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
@@ -936,7 +949,7 @@ function buildCustomerReceipt({ zone, customerName, orders, employee, printCount
     receiptType: RECEIPT_TYPE_HIDDEN,
     waiter: sanitizeText(employee?.displayName || employee?.username || '', 60) || 'Staff',
     customerName: safeCustomerName,
-    zoneLabel: zone?.label || '',
+    zoneLabel: formatZoneDisplayLabel(zone?.label || ''),
     serial,
     chk: `${receiptOrders.length}/${items.length}/${receiptOrders.reduce((sum, order) => sum + Number(order.items?.length || 0), 0)}`,
     openAt: firstOrder?.createdAt || nowIso(),
@@ -1403,7 +1416,7 @@ function getZoneList(baseUrl) {
     const checkoutStatus = getZoneCheckoutStatus(zone.id);
     return {
       id: zone.id,
-      label: zone.label,
+      label: formatZoneDisplayLabel(zone.label),
       token: zone.token,
       accessCode: zone.access_code || '',
       accessCodeUpdatedAt: zone.access_code_updated_at || null,
@@ -1452,7 +1465,7 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
     return ({
     id: order.id,
     zoneId: order.zone_id,
-    zoneLabel: order.zone_label,
+    zoneLabel: formatZoneDisplayLabel(order.zone_label),
     zoneToken: order.zone_token,
     customerName: sanitizeText(order.customer_name || '', 40),
     items,
@@ -1965,7 +1978,7 @@ app.post('/api/public/session/open', (req, res) => {
     ttlMinutes: ZONE_SESSION_TTL_MINUTES,
     zone: {
       id: zone.id,
-      label: zone.label,
+      label: formatZoneDisplayLabel(zone.label),
       token: zone.token,
     },
     customerName: session.customerName,
@@ -2013,7 +2026,7 @@ app.get('/api/public/context/:token', (req, res) => {
     accessCodeRequired: ZONE_ACCESS_CODE_REQUIRED,
     zone: {
       id: zone.id,
-      label: zone.label,
+      label: formatZoneDisplayLabel(zone.label),
       token: zone.token,
     },
     menu: getAllMenu(),
@@ -2037,7 +2050,7 @@ app.get('/api/public/cart/:token', (req, res) => {
   const cart = getSessionCart(zone.id, sessionCheck.cartOwnerKey);
   return res.json({
     zoneId: zone.id,
-    zoneLabel: zone.label,
+    zoneLabel: formatZoneDisplayLabel(zone.label),
     cart,
     roomCarts: getRoomLiveCarts(zone.id),
     session: {
@@ -2218,7 +2231,7 @@ app.post('/api/public/orders', (req, res) => {
   return res.status(201).json({
     ok: true,
     orderId,
-    zoneLabel: zone.label,
+    zoneLabel: formatZoneDisplayLabel(zone.label),
     status: 'new',
     roomCarts: getRoomLiveCarts(zone.id),
     session: {
