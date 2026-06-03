@@ -122,6 +122,14 @@ function round2(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function moneyToCents(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100);
+}
+
+function centsToMoney(cents) {
+  return Number(cents || 0) / 100;
+}
+
 function ceil2(value) {
   return Math.ceil((Number(value) + Number.EPSILON) * 100) / 100;
 }
@@ -399,9 +407,9 @@ function renderMenuQtyOnly() {
 function renderCartSummary() {
   const menuMap = new Map(state.menu.map((item) => [item.id, item]));
   const rows = [];
-  let subtotalAll = 0;
-  let taxAll = 0;
-  let serviceAll = 0;
+  let subtotalAllCents = 0;
+  let taxAllCents = 0;
+  let serviceAllCents = 0;
   let totalQty = 0;
 
   for (const [menuId, qtyRaw] of Object.entries(state.cartItems)) {
@@ -411,14 +419,15 @@ function renderCartSummary() {
     const item = menuMap.get(menuId);
     if (!item) continue;
 
-    const subtotal = round2(item.price * qty);
-    const service = round2(subtotal * SERVICE_RATE);
-    const tax = ceil2((subtotal + service) * TAX_RATE);
-    const total = round2(subtotal + tax + service);
+    const subtotalCents = moneyToCents(item.price) * qty;
+    const subtotal = centsToMoney(subtotalCents);
+    const service = centsToMoney(moneyToCents(subtotal * SERVICE_RATE));
+    const tax = centsToMoney(moneyToCents((subtotal + service) * TAX_RATE));
+    const total = centsToMoney(subtotalCents + moneyToCents(service) + moneyToCents(tax));
 
-    subtotalAll += subtotal;
-    taxAll += tax;
-    serviceAll += service;
+    subtotalAllCents += subtotalCents;
+    taxAllCents += moneyToCents(tax);
+    serviceAllCents += moneyToCents(service);
     totalQty += qty;
     rows.push({
       name: item.name,
@@ -430,10 +439,10 @@ function renderCartSummary() {
     });
   }
 
-  subtotalAll = round2(subtotalAll);
-  taxAll = round2(taxAll);
-  serviceAll = round2(serviceAll);
-  const grandTotal = round2(subtotalAll + taxAll + serviceAll);
+  const subtotalAll = centsToMoney(subtotalAllCents);
+  const taxAll = centsToMoney(taxAllCents);
+  const serviceAll = centsToMoney(serviceAllCents);
+  const grandTotal = centsToMoney(subtotalAllCents + taxAllCents + serviceAllCents);
 
   const summaryDigest = JSON.stringify({ rows, subtotalAll, taxAll, serviceAll, grandTotal, totalQty });
   if (summaryDigest === state.cartSummaryDigest) {
