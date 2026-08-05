@@ -1,7 +1,17 @@
-# Dependencies
+# -----------------------------------------------------------------------------
+# Dependencies and package-manager caches
+# -----------------------------------------------------------------------------
 node_modules/
+.npm/
+.yarn/
+.pnpm-store/
 
-# Environment secrets
+# -----------------------------------------------------------------------------
+# Environment files and secrets
+#
+# AWS keeps its real `.env` on the server. A normal git pull must never replace
+# it. Only sanitized examples are tracked.
+# -----------------------------------------------------------------------------
 .env
 .env.local
 .env.aws
@@ -10,24 +20,85 @@ node_modules/
 !.env.local.example
 !.env.aws.example
 
-# OS / editor
-.DS_Store
-
-# Runtime database files (SQLite)
+# -----------------------------------------------------------------------------
+# Runtime data
+#
+# Never commit or deploy a live SQLite database, its WAL/SHM sidecars, or local
+# database backups. `database/store.json` is intentionally not ignored because
+# it is already a tracked legacy migration input; do not edit it for UI work.
+# -----------------------------------------------------------------------------
 database/*.sqlite3
 database/*.sqlite3-shm
 database/*.sqlite3-wal
+database/*.sqlite3-journal
+database/*.db
+database/*.db-shm
+database/*.db-wal
+database/*.db-journal
+database/*.bak
+database/*.backup
+database/backups/
 
-# Logs
+# -----------------------------------------------------------------------------
+# Android / React Native build products
+# -----------------------------------------------------------------------------
+*.apk
+*.aab
+*.apks
+apps/employee_app/android/.gradle/
+apps/employee_app/android/build/
+apps/employee_app/android/app/build/
+apps/employee_app/ios/build/
+apps/employee_app/.bundle/
+apps/employee_app/.metro-health-check*
+
+# Local source snapshots created while repairing App.tsx
+apps/employee_app/App.tsx.backup.*
+apps/employee_app/App.tsx.pre-*
+*.bak
+*.orig
+*~
+
+# -----------------------------------------------------------------------------
+# Windows packaging products (keep source and printer worker code trackable)
+# -----------------------------------------------------------------------------
+windows_employee_app/dist/
+windows_employee_app/dist_*/
+windows_employee_app/out/
+windows_employee_app/release/
+
+# -----------------------------------------------------------------------------
+# Tests, logs, reports, and temporary output
+# -----------------------------------------------------------------------------
+coverage/
+.nyc_output/
+.jest-cache/
+.eslintcache
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-
-# Coverage / build artifacts
-coverage/
+nohup.out
+BUG_FIX_REPORT.md
 dist/
 .tmp/
 tmp/
 
+# -----------------------------------------------------------------------------
+# Local AI-agent and editor state
+# -----------------------------------------------------------------------------
+.claude/
+.codex/
+.codegraph/
+.zcode/
+.agents/
+.idea/
+.vscode/
+
+# -----------------------------------------------------------------------------
+# OS metadata
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
 

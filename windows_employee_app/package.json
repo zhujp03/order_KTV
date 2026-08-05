@@ -1,0 +1,50 @@
+{
+  "name": "order-system-employee-windows",
+  "version": "1.0.0",
+  "description": "Windows desktop client for the employee order board.",
+  "author": "OpenAI Codex",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis --x64",
+    "dist:win:x64": "electron-builder --win nsis --x64",
+    "dist:win:ia32": "electron-builder --win nsis --ia32"
+  },
+  "build": {
+    "appId": "com.order.system.employee",
+    "productName": "Order System Employee",
+    "artifactName": "${productName} Setup ${version}-${arch}.${ext}",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*"
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    }
+  },
+  "devDependencies": {
+    "electron": "22.3.27",
+    "electron-builder": "^24.13.3"
+  }
+}

@@ -15,7 +15,6 @@ const state = {
   activeCategory: '',
   sessionToken: '',
   sessionId: '',
-  accessCodeRequired: false,
   sessionOpen: true,
   customerName: '',
   roomLabelRaw: '',
@@ -34,7 +33,6 @@ const accessGateEl = document.getElementById('accessGate');
 const accessGateTitleEl = document.getElementById('accessGateTitle');
 const accessGateIntroEl = document.getElementById('accessGateIntro');
 const customerNameInputEl = document.getElementById('customerNameInput');
-const accessCodeInputEl = document.getElementById('accessCodeInput');
 const verifyAccessBtnEl = document.getElementById('verifyAccessBtn');
 const accessMsgEl = document.getElementById('accessMsg');
 const stickyMenuHeadEl = document.getElementById('stickyMenuHead');
@@ -178,33 +176,19 @@ function getSessionHeaders() {
 
 function updateAccessGateCopy() {
   const sessionOpen = state.sessionOpen !== false;
-  const requiresCode = state.accessCodeRequired === true;
   if (accessGateTitleEl) {
-    accessGateTitleEl.textContent = sessionOpen
-      ? (requiresCode ? 'Verify In-Store Access' : 'Start This Room Session')
-      : 'Room Not Open Yet';
+    accessGateTitleEl.textContent = sessionOpen ? 'Start This Room Session' : 'Room Not Open Yet';
   }
   if (accessGateIntroEl) {
     accessGateIntroEl.textContent = sessionOpen
-      ? (requiresCode
-        ? 'Enter your name and the room access code provided in store to enable cart and ordering.'
-        : 'Enter your name to join the current room session and start ordering.')
+      ? 'Enter your name to join the current room session and start ordering.'
       : 'Please ask staff to open this room first. Your existing QR code stays the same.';
   }
   if (customerNameInputEl) {
     customerNameInputEl.disabled = !sessionOpen;
   }
-  if (accessCodeInputEl) {
-    accessCodeInputEl.hidden = !sessionOpen || !requiresCode;
-    accessCodeInputEl.disabled = !sessionOpen || !requiresCode;
-    if (!requiresCode) {
-      accessCodeInputEl.value = '';
-    }
-  }
   if (verifyAccessBtnEl) {
-    verifyAccessBtnEl.textContent = sessionOpen
-      ? (requiresCode ? 'Verify' : 'Start Ordering')
-      : 'Waiting for Staff';
+    verifyAccessBtnEl.textContent = sessionOpen ? 'Start Ordering' : 'Waiting for Staff';
     verifyAccessBtnEl.disabled = !sessionOpen;
   }
 }
@@ -234,9 +218,7 @@ function clearSession(message = '') {
   ordersBtnEl.textContent = 'Orders';
   ordersListEl.textContent = 'No submitted orders yet.';
   roomLiveListEl.textContent = 'No live items yet.';
-  const fallbackMessage = state.accessCodeRequired
-    ? 'Session expired. Please re-enter access code.'
-    : 'Session expired. Please enter your name again.';
+  const fallbackMessage = 'Session expired. Please enter your name again.';
   showAccessGate(message || fallbackMessage);
   applyAccessUiState();
 }
@@ -671,9 +653,7 @@ function applyLocalDelta(menuId, delta) {
 
 async function submitOrder() {
   if (!state.sessionToken) {
-    showAccessGate(state.accessCodeRequired
-      ? 'Access code required before placing order.'
-      : 'Please enter your name before placing order.');
+    showAccessGate('Please enter your name before placing order.');
     return;
   }
 
@@ -704,12 +684,8 @@ async function submitOrder() {
     submitMsgEl.textContent = `Order placed. Ref: ${data.orderId.slice(0, 8)}.`;
   } catch (error) {
     if (error.requiresAccessCode) {
-      clearSession(state.accessCodeRequired
-        ? 'Session expired. Please verify access code again.'
-        : 'Session expired. Please enter your name again to continue.');
-      submitMsgEl.textContent = state.accessCodeRequired
-        ? 'Session expired. Re-verify access code to continue.'
-        : 'Session expired. Please enter your name again to continue.';
+      clearSession('Session expired. Please enter your name again to continue.');
+      submitMsgEl.textContent = 'Session expired. Please enter your name again to continue.';
       return;
     }
     submitMsgEl.textContent = `Order failed: ${error.message}`;
@@ -733,9 +709,7 @@ async function syncNoteToServer() {
     applyRoomCarts(data.roomCarts);
   } catch (error) {
     if (error.requiresAccessCode) {
-      clearSession(state.accessCodeRequired
-        ? 'Session expired. Please verify access code again.'
-        : 'Session expired. Please enter your name again to continue.');
+      clearSession('Session expired. Please enter your name again to continue.');
       return;
     }
     submitMsgEl.textContent = `Note sync failed: ${error.message}`;
@@ -749,25 +723,20 @@ function scheduleNoteSync() {
   state.noteSyncTimer = setTimeout(syncNoteToServer, 450);
 }
 
-async function openSessionWithAccessCode() {
+async function openRoomSession() {
   if (state.sessionOpen === false) {
     accessMsgEl.textContent = 'This room is not open yet. Please ask staff to open it first.';
     updateAccessGateCopy();
     return false;
   }
   const customerName = customerNameInputEl.value.trim();
-  const code = accessCodeInputEl.value.trim();
   if (!customerName) {
     accessMsgEl.textContent = 'Please enter your name.';
     return false;
   }
-  if (state.accessCodeRequired && !code) {
-    accessMsgEl.textContent = 'Please enter an access code.';
-    return false;
-  }
 
   verifyAccessBtnEl.disabled = true;
-  accessMsgEl.textContent = 'Verifying...';
+  accessMsgEl.textContent = 'Starting...';
   try {
     const data = await apiFetchJson('/api/public/session/open', {
       method: 'POST',
@@ -775,7 +744,6 @@ async function openSessionWithAccessCode() {
       body: JSON.stringify({
         token: state.token,
         customerName,
-        accessCode: state.accessCodeRequired ? code : '',
       }),
     });
     state.sessionToken = data.sessionToken || '';
@@ -784,7 +752,6 @@ async function openSessionWithAccessCode() {
     saveSessionToken(state.token, state.sessionToken);
     hideAccessGate();
     customerNameInputEl.value = '';
-    accessCodeInputEl.value = '';
     applyServerCart(data.cart || { items: {}, note: '' }, { syncNote: true });
     applyRoomCarts(data.roomCarts);
     await fetchSharedCart(true);
@@ -894,9 +861,7 @@ function bindMenuActions() {
     const menuId = button.dataset.id;
     const delta = button.dataset.action === 'inc' ? 1 : -1;
     if (!state.sessionToken) {
-      showAccessGate(state.accessCodeRequired
-        ? 'Access code required before editing cart.'
-        : 'Please enter your name before editing cart.');
+      showAccessGate('Please enter your name before editing cart.');
       return;
     }
 
@@ -906,9 +871,7 @@ function bindMenuActions() {
       await mutateCart(menuId, delta);
     } catch (error) {
       if (error.requiresAccessCode) {
-        clearSession(state.accessCodeRequired
-          ? 'Session expired. Please verify access code again.'
-          : 'Session expired. Please enter your name again to continue.');
+        clearSession('Your session expired. Please enter your name again to continue.');
         await fetchSharedCart(true).catch(() => {});
         return;
       }
@@ -952,9 +915,7 @@ function bindCartDrawer() {
       ordersBtnEl.textContent = 'Close Orders';
     } catch (error) {
       if (error.requiresAccessCode) {
-        clearSession(state.accessCodeRequired
-          ? 'Session expired. Please verify access code again.'
-          : 'Session expired. Please enter your name again to continue.');
+        clearSession('Your session expired. Please enter your name again to continue.');
         return;
       }
       submitMsgEl.textContent = `Load orders failed: ${error.message}`;
@@ -963,16 +924,11 @@ function bindCartDrawer() {
 }
 
 function bindAccessGate() {
-  verifyAccessBtnEl.addEventListener('click', openSessionWithAccessCode);
-  accessCodeInputEl.addEventListener('keydown', async (event) => {
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-    await openSessionWithAccessCode();
-  });
+  verifyAccessBtnEl.addEventListener('click', openRoomSession);
   customerNameInputEl.addEventListener('keydown', async (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    await openSessionWithAccessCode();
+    await openRoomSession();
   });
 }
 
@@ -992,9 +948,7 @@ async function pollCartLoop() {
       updateAccessGateCopy();
       clearSession(error.zoneNotOpen
         ? 'This room is not open yet. Please ask staff to open it first.'
-        : (state.accessCodeRequired
-          ? 'Session expired. Please verify access code again.'
-          : 'Session expired. Please enter your name again to continue.'));
+        : 'Session expired. Please enter your name again to continue.');
     }
     // Silent retry to keep the front screen calm.
   } finally {
@@ -1008,20 +962,15 @@ async function pollContextLoop() {
     const data = await apiFetchJson(`/api/public/context/${encodeURIComponent(state.token)}`);
     const nextSessionOpen = data.sessionOpen !== false;
     const wasClosed = state.sessionOpen === false;
-    state.accessCodeRequired = data.accessCodeRequired === true;
     state.sessionOpen = nextSessionOpen;
     updateAccessGateCopy();
     if (!state.sessionToken) {
       showAccessGate(nextSessionOpen
-        ? (state.accessCodeRequired
-          ? 'Enter access code to start cart sync and ordering.'
-          : 'Enter your name to start cart sync and ordering.')
+        ? 'Enter your name to start cart sync and ordering.'
         : 'This room is not open yet. Please ask staff to open it first.');
     }
     if (wasClosed && nextSessionOpen) {
-      accessMsgEl.textContent = state.accessCodeRequired
-        ? 'Staff has opened this room. Please enter your name and access code.'
-        : 'Staff has opened this room. Please enter your name to start ordering.';
+      accessMsgEl.textContent = 'Staff has opened this room. Please enter your name to start ordering.';
     }
   } catch {
     // Silent retry to keep the front screen calm.
@@ -1036,9 +985,7 @@ async function pollOrdersLoop() {
     renderSubmittedOrders(submittedOrders);
   } catch (error) {
     if (error.requiresAccessCode) {
-      clearSession(state.accessCodeRequired
-        ? 'Session expired. Please verify access code again.'
-        : 'Session expired. Please enter your name again to continue.');
+      clearSession('Session expired. Please enter your name again to continue.');
     }
   }
 }
@@ -1054,7 +1001,6 @@ async function loadContext() {
     state.sessionToken = loadSessionToken(state.token);
     state.sessionId = '';
     const data = await apiFetchJson(`/api/public/context/${encodeURIComponent(state.token)}`);
-    state.accessCodeRequired = data.accessCodeRequired === true;
     state.sessionOpen = data.sessionOpen !== false;
     updateAccessGateCopy();
     if (data?.session?.token) {
@@ -1084,18 +1030,14 @@ async function loadContext() {
     if (!state.sessionToken) {
       showAccessGate(state.sessionOpen === false
         ? 'This room is not open yet. Please ask staff to open it first.'
-        : (state.accessCodeRequired
-          ? 'Enter access code to start cart sync and ordering.'
-          : 'Enter your name to start cart sync and ordering.'));
+        : 'Enter your name to start cart sync and ordering.');
     } else {
       hideAccessGate();
       try {
         await fetchSharedCart(true);
       } catch (error) {
         if (error.requiresAccessCode) {
-          clearSession(state.accessCodeRequired
-            ? 'Session expired. Please enter access code.'
-            : 'Session expired. Please enter your name again.');
+          clearSession('Session expired. Please enter your name again.');
         } else {
           throw error;
         }

@@ -3,112 +3,116 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Admin 菜单与二维码管理</title>
+    <title>Admin 经营后台 · 概览</title>
     <link rel="stylesheet" href="/style/main.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <section class="hero">
-        <h1>Admin 菜单编辑与二维码管理</h1>
-        <p>这里维护菜单、创建桌号/包厢二维码，并和接单看板保持同步。</p>
-      </section>
+    <main class="app-shell manage-shell" style="width: min(1400px, 96vw);">
+      <section class="manage-layout" style="display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); gap: 20px; align-items: start;">
+        <aside class="manage-nav">
+          <div class="manage-nav-header">
+            <h1>Admin</h1>
+            <p>经营后台</p>
+          </div>
+          <nav>
+            <a class="manage-nav-link active" href="/admin_manage/index.html">
+              <span class="manage-nav-icon">📊</span>
+              <span>概览</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/menu.html">
+              <span class="manage-nav-icon">🍽️</span>
+              <span>菜单</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/zones.html">
+              <span class="manage-nav-icon">🪑</span>
+              <span>桌台二维码</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/reports.html">
+              <span class="manage-nav-icon">📈</span>
+              <span>报表</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/employees.html">
+              <span class="manage-nav-icon">👥</span>
+              <span>员工</span>
+            </a>
+          </nav>
+        </aside>
 
-      <section class="grid cols-2">
-        <article class="card">
-          <div class="row wrap" style="justify-content: space-between">
-            <h2>菜单编辑</h2>
-            <button id="addMenuBtn" class="secondary">新增菜品</button>
-          </div>
-          <div class="row wrap" style="margin-top: 10px">
-            <input id="categoryNameInput" placeholder="新分类名（例如：Cocktail）" style="max-width: 260px" />
-            <button id="addCategoryBtn" class="secondary">创建分类</button>
-          </div>
-          <div id="categoryList" class="row wrap" style="margin-top: 8px"></div>
-          <p id="categoryMsg" class="small muted" style="margin: 8px 0 0">请先创建分类，再编辑菜单。</p>
-          <div class="card" style="margin-top: 12px; padding: 12px">
-            <h3 style="margin: 0 0 8px">批量导入菜单文本</h3>
-            <textarea id="bulkMenuInput" placeholder="粘贴 Category/Name/Price/Description 文本"></textarea>
-            <div class="row wrap" style="margin-top: 8px">
-              <button id="bulkImportBtn" class="secondary">批量导入并追加</button>
-              <span id="bulkImportMsg" class="small muted"></span>
+        <section class="manage-main">
+          <header class="page-header">
+            <div class="page-header-left">
+              <h1>概览</h1>
+              <p>经营摘要与快捷入口</p>
             </div>
-          </div>
-          <table class="table" id="menuTable" style="margin-top: 8px">
-            <thead>
-              <tr>
-                <th style="width: 40px"><input id="menuSelectAll" type="checkbox" /></th>
-                <th>名称</th>
-                <th>价格</th>
-                <th>分类</th>
-                <th>描述</th>
-                <th>上架</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="menuTbody"></tbody>
-          </table>
-          <div class="row wrap" style="justify-content: space-between; margin-top: 10px">
-            <div class="row wrap">
-              <button id="deleteSelectedMenuBtn" class="warn">删除勾选</button>
-              <button id="deleteAllMenuBtn" class="warn">全部删除</button>
+            <div class="page-header-right">
+              <span class="page-date" id="pageDate"></span>
             </div>
-            <button id="saveMenuBtn">保存菜单</button>
-          </div>
-          <p id="menuMsg" class="small muted" style="margin-bottom: 0"></p>
-        </article>
+          </header>
 
-        <article class="card">
-          <h2>桌号 / 包厢二维码</h2>
-          <div class="row wrap" style="margin-top: 8px">
-            <input id="zoneLabelInput" placeholder="例如：5个包厢、8桌" style="max-width: 260px" />
-            <button id="addZoneBtn" class="secondary">批量生成二维码</button>
-          </div>
-          <p class="small muted">输入数量后自动生成。包厢格式：1包、2包...；桌子格式：1号桌、2号桌...</p>
-          <p class="small muted">每个二维码 token 固定，可长期使用；如泄露可单独重置。每桌/包厢还有访问码，客人需输入访问码才能点单。</p>
-          <div id="zoneList" class="grid" style="margin-top: 8px"></div>
-        </article>
-      </section>
+          <section class="summary-cards">
+            <div class="summary-card">
+              <div class="summary-card-label">今日下单金额</div>
+              <div class="summary-card-value" id="statAmount">$0.00</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-label">今日订单数</div>
+              <div class="summary-card-value" id="statOrders">0</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-label">当前开台桌数</div>
+              <div class="summary-card-value" id="statOpen">0</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-label">当前可结单桌数</div>
+              <div class="summary-card-value" id="statCheckout">0</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-label">进行中订单桌数</div>
+              <div class="summary-card-value" id="statActive">0</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-label">当前员工数</div>
+              <div class="summary-card-value" id="statEmployees">0</div>
+            </div>
+          </section>
 
-      <section class="card" style="margin-top: 16px">
-        <h3>老板查账（按日期）</h3>
-        <div class="row wrap" style="margin-top: 8px">
-          <input id="reportDateInput" type="date" style="max-width: 220px" />
-          <button id="loadReportBtn" class="secondary">查询当天订单</button>
-          <span id="reportSummary" class="small muted"></span>
-        </div>
-        <div id="reportOrdersList" class="grid" style="margin-top: 10px"></div>
-      </section>
+          <section class="quick-links-section">
+            <h2 class="section-title">功能入口</h2>
+            <div class="quick-links-grid">
+              <a class="quick-link-card" href="/admin_manage/menu.html">
+                <div class="quick-link-icon">🍽️</div>
+                <div class="quick-link-title">菜单管理</div>
+                <div class="quick-link-desc">按分类维护菜品</div>
+                <div class="quick-link-action">进入 →</div>
+              </a>
+              <a class="quick-link-card" href="/admin_manage/zones.html">
+                <div class="quick-link-icon">🪑</div>
+                <div class="quick-link-title">桌台二维码</div>
+                <div class="quick-link-desc">生成与管理桌台</div>
+                <div class="quick-link-action">进入 →</div>
+              </a>
+              <a class="quick-link-card" href="/admin_manage/reports.html">
+                <div class="quick-link-icon">📈</div>
+                <div class="quick-link-title">经营报表</div>
+                <div class="quick-link-desc">查看订单统计</div>
+                <div class="quick-link-action">进入 →</div>
+              </a>
+              <a class="quick-link-card" href="/admin_manage/employees.html">
+                <div class="quick-link-icon">👥</div>
+                <div class="quick-link-title">员工管理</div>
+                <div class="quick-link-desc">账号与权限</div>
+                <div class="quick-link-action">进入 →</div>
+              </a>
+            </div>
+          </section>
 
-      <section class="card" style="margin-top: 16px">
-        <h3>员工账号管理</h3>
-        <div class="row wrap" style="margin-top: 8px">
-          <input id="employeeDisplayNameInput" placeholder="员工真实姓名" style="max-width: 220px" />
-          <input id="employeeUsernameInput" placeholder="员工用户名" style="max-width: 220px" />
-          <input id="employeePasswordInput" type="password" placeholder="员工密码" style="max-width: 220px" />
-          <button id="addEmployeeBtn" class="secondary">新增员工</button>
-          <span id="employeeManageMsg" class="small muted"></span>
-        </div>
-        <table class="table" style="margin-top: 8px">
-          <thead>
-            <tr>
-              <th>真实姓名</th>
-              <th>用户名</th>
-              <th>新密码（留空不改）</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="employeeTbody"></tbody>
-        </table>
-      </section>
-
-      <section class="card" style="margin-top: 16px">
-        <h3>反追踪 / 隐私默认策略（雏形版）</h3>
-        <div class="notice small">
-          系统默认不接入第三方统计、不加载第三方字体脚本、不记录设备指纹；订单只关联“二维码 token + 桌号/包厢标签”，用于本地内网与 AWS 公网一致部署。
-        </div>
+          <section class="system-note">
+            <h2 class="section-title">系统说明</h2>
+            <div class="note-content">系统默认不接入第三方统计、不加载第三方字体脚本、不记录设备指纹。</div>
+          </section>
+        </section>
       </section>
     </main>
-
     <script src="/admin_manage/app.js"></script>
   </body>
 </html>

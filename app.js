@@ -1705,6 +1705,110 @@ function getOrderWithItems({ history = false, status = '' } = {}) {
   });
 }
 
+function encodeHistoryCursor(value) {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
+function decodeHistoryCursor(cursorText) {
+  const text = sanitizeText(cursorText, 2000);
+  if (!text) return null;
+  try {
+    const raw = Buffer.from(text, 'base64url').toString('utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHistoryFilterText(value, maxLength = 120) {
+  return sanitizeText(value, maxLength).trim();
+}
+
+function buildEmployeeHistoryBatches(orders) {
+  const batches = new Map();
+
+  for (const order of orders) {
+    const hasCheckoutAt = typeof order.checkoutAt === 'string' && order.checkoutAt;
+    const batchKey = hasCheckoutAt ? `${order.zoneId}|${order.checkoutAt}` : `legacy:${order.id}`;
+    const existing = batches.get(batchKey);
+    if (existing) {
+      existing.orders.push(order);
+      continue;
+    }
+
+    const sortAtMs = hasCheckoutAt
+      ? new Date(order.checkoutAt).getTime()
+      : new Date(order.archivedAt || order.createdAt || '').getTime();
+    batches.set(batchKey, {
+      batchKey,
+      legacy: !hasCheckoutAt,
+      zoneId: order.zoneId,
+      zoneLabel: order.zoneLabel,
+      checkoutAt: hasCheckoutAt ? order.checkoutAt : null,
+      sortAtMs: Number.isFinite(sortAtMs) ? sortAtMs : 0,
+      orders: [order],
+    });
+  }
+
+  return [...batches.values()]
+    .map((batch) => {
+      const ordersInBatch = [...batch.orders].sort((a, b) => {
+        const aTime = new Date(a.createdAt || '').getTime();
+        const bTime = new Date(b.createdAt || '').getTime();
+        if (bTime !== aTime) return bTime - aTime;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      });
+      const customerNames = [...new Set(ordersInBatch.map((order) => sanitizeText(order.customerName || '', 40)).filter(Boolean))];
+      const handledByEmployeeUsernames = [...new Set(ordersInBatch.map((order) => sanitizeText(order.handledByEmployeeUsername || '', 60)).filter(Boolean))];
+      const itemLineCount = ordersInBatch.reduce((sum, order) => sum + (Array.isArray(order.items) ? order.items.length : 0), 0);
+      const itemQuantity = ordersInBatch.reduce((sum, order) => (
+        sum + (Array.isArray(order.items)
+          ? order.items.reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0)
+          : 0)
+      ), 0);
+      const total = centsToMoney(ordersInBatch.reduce((sum, order) => sum + moneyToCents(order.total || 0), 0));
+
+      return {
+        batchKey: batch.batchKey,
+        legacy: batch.legacy,
+        zoneId: batch.zoneId,
+        zoneLabel: batch.zoneLabel,
+        checkoutAt: batch.checkoutAt,
+        customerCount: customerNames.length,
+        orderCount: ordersInBatch.length,
+        itemLineCount,
+        itemQuantity,
+        total,
+        handledByEmployeeUsernames,
+        sortAtMs: batch.sortAtMs,
+        orders: ordersInBatch,
+      };
+    })
+    .sort((a, b) => {
+      if (b.sortAtMs !== a.sortAtMs) return b.sortAtMs - a.sortAtMs;
+      return String(b.batchKey).localeCompare(String(a.batchKey));
+    });
+}
+
+function compareHistoryBatchCursor(batch, cursor) {
+  if (!cursor || typeof cursor !== 'object') return false;
+  const cursorSortAtMs = Number(cursor.sortAtMs || 0);
+  const cursorBatchKey = sanitizeText(cursor.batchKey || '', 200);
+  if (!cursorBatchKey) return false;
+  if (batch.sortAtMs < cursorSortAtMs) return true;
+  if (batch.sortAtMs > cursorSortAtMs) return false;
+  return String(batch.batchKey).localeCompare(cursorBatchKey) < 0;
+}
+
+function matchHistoryBatchDate(batch, startUtcMs, endUtcMs) {
+  const batchTimeText = batch.legacy ? (batch.orders[0]?.archivedAt || batch.orders[0]?.createdAt || '') : batch.checkoutAt;
+  const batchTime = new Date(batchTimeText || '').getTime();
+  if (!Number.isFinite(batchTime)) return false;
+  return batchTime >= startUtcMs && batchTime < endUtcMs;
+}
+
 function resolveBaseUrl(req) {
   if (PUBLIC_BASE_URL && typeof PUBLIC_BASE_URL === 'string') {
     return PUBLIC_BASE_URL.replace(/\/$/, '');
@@ -3125,6 +3229,88 @@ app.get('/api/employee/orders', requireEmployeeAuth, (req, res) => {
     orders: getOrderWithItems({ history: false, status }),
     statuses: ORDER_STATUSES,
     writeQueue: getWriteQueueInfo(),
+  });
+});
+
+app.get('/api/employee/orders/history', requireEmployeeAuth, (req, res) => {
+  const limitRaw = Number(req.query.limit ?? 30);
+  const limit = Number.isInteger(limitRaw) ? Math.trunc(limitRaw) : 30;
+  if (limit < 1 || limit > 100) {
+    return res.status(400).json({ error: 'Invalid limit. Use 1 to 100.' });
+  }
+
+  const zoneId = normalizeHistoryFilterText(req.query.zoneId, 100);
+  const customerName = normalizeHistoryFilterText(req.query.customerName, 120);
+  const date = normalizeHistoryFilterText(req.query.date, 20);
+  const tzOffsetRaw = Number(req.query.tzOffsetMinutes);
+  const tzOffsetMinutes = Number.isFinite(tzOffsetRaw) ? Math.trunc(tzOffsetRaw) : 0;
+
+  let startUtcMs = null;
+  let endUtcMs = null;
+  if (date) {
+    const m = String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) {
+      return res.status(400).json({ error: 'Invalid date. Use YYYY-MM-DD.' });
+    }
+    const year = Number(m[1]);
+    const monthIdx = Number(m[2]) - 1;
+    const day = Number(m[3]);
+    startUtcMs = Date.UTC(year, monthIdx, day, 0, 0, 0, 0) + tzOffsetMinutes * 60 * 1000;
+    endUtcMs = startUtcMs + 24 * 60 * 60 * 1000;
+  }
+
+  const cursor = decodeHistoryCursor(req.query.cursor);
+  if (req.query.cursor && !cursor) {
+    return res.status(400).json({ error: 'Invalid cursor.' });
+  }
+  if (cursor) {
+    if (
+      normalizeHistoryFilterText(cursor.zoneId, 100) !== zoneId ||
+      normalizeHistoryFilterText(cursor.customerName, 120) !== customerName ||
+      normalizeHistoryFilterText(cursor.date, 20) !== date ||
+      Number(cursor.tzOffsetMinutes || 0) !== tzOffsetMinutes
+    ) {
+      return res.status(400).json({ error: 'Cursor does not match current filters.' });
+    }
+  }
+
+  const allHistory = buildEmployeeHistoryBatches(getOrderWithItems({ history: true }));
+  const filtered = allHistory.filter((batch) => {
+    if (zoneId && batch.zoneId !== zoneId) return false;
+    if (startUtcMs !== null && endUtcMs !== null && !matchHistoryBatchDate(batch, startUtcMs, endUtcMs)) return false;
+    if (customerName) {
+      const haystack = batch.orders.some((order) => normalizeHistoryFilterText(order.customerName || '', 120).toLowerCase().includes(customerName.toLowerCase()));
+      if (!haystack) return false;
+    }
+    return true;
+  });
+
+  let startIndex = 0;
+  if (cursor) {
+    const cursorIndex = filtered.findIndex((batch) => batch.batchKey === cursor.batchKey && batch.sortAtMs === Number(cursor.sortAtMs || 0));
+    if (cursorIndex < 0) {
+      return res.status(400).json({ error: 'Cursor is no longer valid for the current filters.' });
+    }
+    startIndex = cursorIndex + 1;
+  }
+
+  const page = filtered.slice(startIndex, startIndex + limit).map(({ sortAtMs, ...batch }) => batch);
+  const nextItem = filtered[startIndex + page.length];
+  const nextCursor = nextItem
+    ? encodeHistoryCursor({
+        zoneId,
+        customerName,
+        date,
+        tzOffsetMinutes,
+        sortAtMs: nextItem.sortAtMs,
+        batchKey: nextItem.batchKey,
+      })
+    : null;
+
+  return res.json({
+    history: page,
+    nextCursor,
+    hasMore: Boolean(nextItem),
   });
 });
 

@@ -1,61 +1,222 @@
+const noopFn = () => {};
+const noopEl = new Proxy({}, {
+  get(_target, prop) {
+    if (prop === 'addEventListener' || prop === 'removeEventListener' || prop === 'focus' || prop === 'click' || prop === 'scrollIntoView') return noopFn;
+    if (prop === 'querySelectorAll') return () => [];
+    if (prop === 'querySelector') return () => null;
+    if (prop === 'closest') return () => null;
+    if (prop === 'contains') return () => false;
+    if (prop === 'getBoundingClientRect') return () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
+    if (prop === 'classList') return { add: noopFn, remove: noopFn, toggle: () => false, contains: () => false };
+    if (prop === 'style') return {};
+    if (prop === 'dataset') return {};
+    if (prop === Symbol.iterator) return function* () {};
+    return noopEl;
+  },
+  set() { return true; },
+});
+
+function getEl(id) {
+  return document.getElementById(id) || noopEl;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 let menuState = [];
 let zonesState = [];
 let categoriesState = [];
 let zonesRefreshTimer = null;
 let zonesLoading = false;
 let draggingCategoryId = '';
+let selectedZoneId = '';
 
-const menuTbodyEl = document.getElementById('menuTbody');
-const addMenuBtnEl = document.getElementById('addMenuBtn');
-const saveMenuBtnEl = document.getElementById('saveMenuBtn');
-const menuSelectAllEl = document.getElementById('menuSelectAll');
-const deleteSelectedMenuBtnEl = document.getElementById('deleteSelectedMenuBtn');
-const deleteAllMenuBtnEl = document.getElementById('deleteAllMenuBtn');
-const menuMsgEl = document.getElementById('menuMsg');
-const categoryNameInputEl = document.getElementById('categoryNameInput');
-const addCategoryBtnEl = document.getElementById('addCategoryBtn');
-const categoryListEl = document.getElementById('categoryList');
-const categoryMsgEl = document.getElementById('categoryMsg');
-const bulkMenuInputEl = document.getElementById('bulkMenuInput');
-const bulkImportBtnEl = document.getElementById('bulkImportBtn');
-const bulkImportMsgEl = document.getElementById('bulkImportMsg');
+const menuGroupedListEl = getEl('menuGroupedList');
+const addMenuBtnEl = getEl('addMenuBtn');
+const saveMenuBtnEl = getEl('saveMenuBtn');
+const collapseAllMenuBtnEl = getEl('collapseAllMenuBtn');
+const expandAllMenuBtnEl = getEl('expandAllMenuBtn');
+const deleteSelectedMenuBtnEl = getEl('deleteSelectedMenuBtn');
+const deleteAllMenuBtnEl = getEl('deleteAllMenuBtn');
+const menuMsgEl = getEl('menuMsg');
+const categoryNameInputEl = getEl('categoryNameInput');
+const addCategoryBtnEl = getEl('addCategoryBtn');
+const categoryListEl = getEl('categoryList');
+const categoryMsgEl = getEl('categoryMsg');
+const bulkMenuInputEl = getEl('bulkMenuInput');
+const bulkImportBtnEl = getEl('bulkImportBtn');
+const bulkImportMsgEl = getEl('bulkImportMsg');
 
-const zoneListEl = document.getElementById('zoneList');
-const zoneLabelInputEl = document.getElementById('zoneLabelInput');
-const addZoneBtnEl = document.getElementById('addZoneBtn');
-const reportDateInputEl = document.getElementById('reportDateInput');
-const loadReportBtnEl = document.getElementById('loadReportBtn');
-const reportSummaryEl = document.getElementById('reportSummary');
-const reportOrdersListEl = document.getElementById('reportOrdersList');
-const employeeDisplayNameInputEl = document.getElementById('employeeDisplayNameInput');
-const employeeUsernameInputEl = document.getElementById('employeeUsernameInput');
-const employeePasswordInputEl = document.getElementById('employeePasswordInput');
-const addEmployeeBtnEl = document.getElementById('addEmployeeBtn');
-const employeeManageMsgEl = document.getElementById('employeeManageMsg');
-const employeeTbodyEl = document.getElementById('employeeTbody');
+const zoneListEl = getEl('zoneList');
+const zoneDetailPanelEl = getEl('zoneDetailPanel');
+const zoneLabelInputEl = getEl('zoneLabelInput');
+const addZoneBtnEl = getEl('addZoneBtn');
+const reportDateInputEl = getEl('reportDateInput');
+const loadReportBtnEl = getEl('loadReportBtn');
+const reportSummaryEl = getEl('reportSummary');
+const reportOrdersListEl = getEl('reportOrdersList');
+const employeeDisplayNameInputEl = getEl('employeeDisplayNameInput');
+const employeeUsernameInputEl = getEl('employeeUsernameInput');
+const employeePasswordInputEl = getEl('employeePasswordInput');
+const addEmployeeBtnEl = getEl('addEmployeeBtn');
+const employeeManageMsgEl = getEl('employeeManageMsg');
+const employeeTbodyEl = getEl('employeeTbody');
 let employeesState = [];
+let overviewOrdersCount = 0;
+let overviewOrdersAmount = 0;
+let overviewOpenZoneCount = 0;
+let overviewCanCheckoutCount = 0;
+let overviewActiveOrderZoneCount = 0;
+let overviewEmployeeCount = 0;
+let overviewUpdatedAt = '';
+let menuHasUnsavedChanges = false;
+let menuGroupExpanded = {};
+
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-}
-
-function escapeHtml(value) {
-  return String(value || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
 }
 
 function money(value) {
   return `$${Number(value || 0).toFixed(2)}`;
 }
 
+function confirmHighRisk(message, extraMessage) {
+  if (!confirm(message)) return false;
+  if (extraMessage && !confirm(extraMessage)) return false;
+  return true;
+}
+
+function syncOverviewStats() {
+  const summary = document.querySelector('.overview-stats');
+  if (!summary) return;
+  const overviewText = `今日下单金额：${money(overviewOrdersAmount)} · 今日订单数：${overviewOrdersCount} · 当前开台桌数：${overviewOpenZoneCount} · 当前可结单桌数：${overviewCanCheckoutCount} · 当前有进行中订单桌数：${overviewActiveOrderZoneCount} · 当前员工数：${overviewEmployeeCount} · 最近更新时间：${overviewUpdatedAt || '-'}`;
+  summary.textContent = overviewText;
+}
+
+
+function getSelectedZone() {
+  return zonesState.find((zone) => zone.id === selectedZoneId) || zonesState[0] || null;
+}
+
+function selectZone(zoneId) {
+  selectedZoneId = zoneId || '';
+  renderZones();
+  renderZoneDetailPanel();
+}
+
+function zoneSummaryText(zone) {
+  const parts = [
+    zone.completed ? '已完成' : zone.sessionOpen === false ? '未开台' : '已开台',
+    `订单 ${Number(zone.activeOrderCount || 0)}`,
+    `金额 ${money(zone.activeOrderTotal || 0)}`,
+  ];
+  if (zone.canCheckout !== false) {
+    parts.push('可结单');
+  }
+  return parts.join(' · ');
+}
+
+function renderZoneDetailPanel() {
+  if (!zoneDetailPanelEl) return;
+  const zone = getSelectedZone();
+  if (!zone) {
+    zoneDetailPanelEl.className = 'manage-zone-detail-empty';
+    zoneDetailPanelEl.innerHTML = '先在左侧列表选择一个桌台。';
+    return;
+  }
+
+  const completedNote = zone.completed && zone.completedAt
+    ? `<div class="zone-done-note">完成时间：${new Date(zone.completedAt).toLocaleString()}</div>`
+    : '';
+
+  zoneDetailPanelEl.className = 'manage-zone-detail';
+  zoneDetailPanelEl.innerHTML = `
+    <div class="qr-card">
+      <div class="row wrap" style="justify-content: space-between; align-items: flex-start;">
+        <div>
+          <strong style="font-size: 1.05rem;">${escapeHtml(zone.label)}</strong>
+          <div class="zone-meta" style="margin-top: 4px;">${escapeHtml(zoneSummaryText(zone))}</div>
+        </div>
+        <span class="badge">token: ${escapeHtml(zone.token.slice(0, 10))}...</span>
+      </div>
+      ${completedNote}
+      <div class="small muted">二维码预览</div>
+      <img src="${zone.qrPngUrl}&size=280" alt="${escapeHtml(zone.label)} 二维码" />
+      <label class="small muted">访问链接</label>
+      <input readonly value="${escapeHtml(zone.accessUrl)}" />
+      <div class="row wrap">
+        <button class="light" data-action="copy-url" data-url="${escapeHtml(zone.accessUrl)}">复制链接</button>
+        <a class="button-link" href="${zone.qrPngUrl}&size=720" download="${escapeHtml(zone.label)}.png">下载 PNG</a>
+        <a class="button-link" href="${zone.qrSvgUrl}" download="${escapeHtml(zone.label)}.svg">下载 SVG</a>
+      </div>
+    </div>
+
+    <div class="manage-danger-box">
+      <h4 style="margin: 0 0 8px;">操作</h4>
+      <div class="row wrap">
+        <button data-action="toggle-complete-zone" data-id="${zone.id}" class="light">${zone.completed ? '取消完成' : '标记完成'}</button>
+        <button data-action="checkout-zone" data-id="${zone.id}" class="warn">结单清零</button>
+        <button data-action="rename-zone" data-id="${zone.id}" class="light">改名</button>
+      </div>
+    </div>
+
+    <div class="manage-danger-box">
+      <h4 style="margin: 0 0 8px;">高危操作区</h4>
+      <p class="small muted" style="margin: 0 0 10px;">重置二维码或删除桌台会让已打印旧二维码失效，请谨慎操作。</p>
+      <div class="row wrap">
+        <button data-action="regenerate-zone" data-id="${zone.id}" class="warn">重置二维码</button>
+        <button data-action="delete-zone" data-id="${zone.id}" class="warn">删除桌台</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderZones() {
+  if (!zonesState.length) {
+    zoneListEl.innerHTML = '<div class="muted">还没有二维码，请先新增桌号/包厢。</div>';
+    if (zoneDetailPanelEl) {
+      zoneDetailPanelEl.className = 'manage-zone-detail-empty';
+      zoneDetailPanelEl.innerHTML = '还没有桌台，先创建一个再查看详情。';
+    }
+    return;
+  }
+
+  if (!zonesState.some((zone) => zone.id === selectedZoneId)) {
+    selectedZoneId = zonesState[0]?.id || '';
+  }
+
+  zoneListEl.innerHTML = zonesState
+    .map(
+      (zone) => `
+      <div class="qr-card manage-zone-card ${zone.id === selectedZoneId ? 'active' : ''}" data-action="select-zone" data-id="${zone.id}">
+        <div class="row wrap" style="justify-content: space-between">
+          <strong class="${zone.completed ? 'zone-title completed' : 'zone-title'}">${escapeHtml(zone.label)}</strong>
+          <span class="small muted">${escapeHtml(zone.completed ? '已完成' : zone.sessionOpen === false ? '未开台' : '已开台')}</span>
+        </div>
+        <div class="zone-meta">当前订单：${zone.activeOrderCount || 0} 单 · 金额：${money(zone.activeOrderTotal || 0)}</div>
+        <div class="zone-meta">${escapeHtml(zone.canCheckout !== false ? '可结单' : '暂不可结单')}</div>
+      </div>
+      `,
+    )
+    .join('');
+
+  renderZoneDetailPanel();
+}
+
+
+
 function renderMenuTable() {
+  if (!menuGroupedListEl) return;
+
   if (!menuState.length) {
-    menuTbodyEl.innerHTML = '<tr><td colspan="7" class="muted">暂无菜品，先新增一条。</td></tr>';
-    if (menuSelectAllEl) menuSelectAllEl.checked = false;
+    menuGroupedListEl.innerHTML = '<div class="muted small" style="padding:24px 0;text-align:center;">暂无菜品，先新增一条。</div>';
     return;
   }
 
@@ -65,32 +226,88 @@ function renderMenuTable() {
       .join('')
     : '<option value="">请先创建分类</option>';
 
-  menuTbodyEl.innerHTML = menuState
-    .map(
-      (item) => `
-      <tr data-id="${item.id}">
-        <td><input type="checkbox" data-menu-select="${item.id}" /></td>
-        <td><input data-field="name" value="${escapeHtml(item.name)}" /></td>
-        <td><input data-field="price" type="number" min="0" step="0.01" value="${Number(item.price).toFixed(2)}" /></td>
-        <td>
-          <select data-field="category">
-            ${categoryOptions}
-          </select>
-        </td>
-        <td><input data-field="description" value="${escapeHtml(item.description || '')}" /></td>
-        <td>
-          <select data-field="available">
-            <option value="true" ${item.available ? 'selected' : ''}>上架</option>
-            <option value="false" ${!item.available ? 'selected' : ''}>下架</option>
-          </select>
-        </td>
-        <td><button class="warn" data-action="remove-menu" data-id="${item.id}">删除</button></td>
-      </tr>
-    `,
-    )
+  const grouped = new Map();
+  for (const item of menuState) {
+    const key = item.category || '未分类';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  }
+
+  const orderedCategories = categoriesState.length
+    ? [
+        ...categoriesState.map((category) => category.name),
+        ...[...grouped.keys()].filter((name) => !categoriesState.some((category) => category.name === name)),
+      ]
+    : [...grouped.keys()];
+
+  menuGroupedListEl.innerHTML = orderedCategories
+    .filter((categoryName, index, self) => self.indexOf(categoryName) === index)
+    .map((categoryName) => {
+      const items = grouped.get(categoryName) || [];
+      if (!items.length) return '';
+      const category = categoriesState.find((c) => c.name === categoryName);
+      const categoryId = category ? category.id : '';
+      const expanded = menuGroupExpanded[categoryName] !== false;
+      return `
+        <section class="menu-category-block" data-category-block="${escapeHtml(categoryName)}">
+          <header class="menu-category-head">
+            <div class="menu-category-title">
+              <button class="menu-category-toggle" type="button" data-action="toggle-category-group" data-category="${escapeHtml(categoryName)}">${expanded ? '▼' : '▶'}</button>
+              <span class="menu-category-name">${escapeHtml(categoryName)}</span>
+              <span class="menu-category-count">${items.length}</span>
+            </div>
+            <div class="menu-category-actions">
+              <button class="btn-ghost small" type="button" data-action="add-item-to-category" data-category="${escapeHtml(categoryName)}">+ 添加</button>
+              <button class="btn-ghost small" type="button" data-action="rename-category-from-group" data-category-id="${escapeHtml(categoryId)}" data-category-name="${escapeHtml(categoryName)}">改名</button>
+              <button class="btn-danger small" type="button" data-action="delete-category-from-group" data-category-id="${escapeHtml(categoryId)}" data-category-name="${escapeHtml(categoryName)}">移除</button>
+            </div>
+          </header>
+          ${expanded ? `
+          <div class="menu-items-wrap">
+            ${items.map((item) => `
+            <div class="menu-item-row" data-id="${item.id}">
+              <div class="menu-item-check">
+                <input type="checkbox" data-menu-select="${item.id}" />
+              </div>
+              <div class="menu-item-main">
+                <div class="menu-item-field">
+                  <label>名称</label>
+                  <input data-field="name" value="${escapeHtml(item.name)}" />
+                </div>
+                <div class="menu-item-field menu-item-field-price">
+                  <label>价格</label>
+                  <input data-field="price" type="number" min="0" step="0.01" value="${Number(item.price).toFixed(2)}" />
+                </div>
+                <div class="menu-item-field menu-item-field-desc">
+                  <label>描述</label>
+                  <input data-field="description" value="${escapeHtml(item.description || '')}" placeholder="—" />
+                </div>
+                <div class="menu-item-field menu-item-field-category">
+                  <label>分类</label>
+                  <select data-field="category">${categoryOptions}</select>
+                </div>
+                <div class="menu-item-field menu-item-field-status">
+                  <label>状态</label>
+                  <select data-field="available">
+                    <option value="true" ${item.available ? 'selected' : ''}>上架</option>
+                    <option value="false" ${!item.available ? 'selected' : ''}>下架</option>
+                  </select>
+                </div>
+              </div>
+              <div class="menu-item-actions">
+                <button class="btn-primary small" type="button" data-action="save-menu-item" data-id="${item.id}">更新</button>
+                <button class="btn-danger small" type="button" data-action="remove-menu-item" data-id="${item.id}">删除</button>
+              </div>
+            </div>
+            `).join('')}
+          </div>
+          ` : ''}
+        </section>
+      `;
+    })
     .join('');
 
-  for (const row of menuTbodyEl.querySelectorAll('tr[data-id]')) {
+  for (const row of menuGroupedListEl.querySelectorAll('.menu-item-row[data-id]')) {
     const id = row.dataset.id;
     const item = menuState.find((menuItem) => menuItem.id === id);
     const categorySelect = row.querySelector('[data-field="category"]');
@@ -98,20 +315,33 @@ function renderMenuTable() {
       categorySelect.value = item.category || categoriesState[0]?.name || '';
     }
   }
-  if (menuSelectAllEl) menuSelectAllEl.checked = false;
 }
 
-function readMenuFromDom() {
-  const rows = [...menuTbodyEl.querySelectorAll('tr[data-id]')];
-  return rows.map((row) => {
-    const id = row.dataset.id;
-    const name = row.querySelector('[data-field="name"]').value.trim();
-    const price = Number(row.querySelector('[data-field="price"]').value);
-    const category = row.querySelector('[data-field="category"]').value.trim();
-    const description = row.querySelector('[data-field="description"]').value.trim();
-    const available = row.querySelector('[data-field="available"]').value === 'true';
-    return { id, name, price, category, description, available };
-  });
+async function saveMenuItem(itemId) {
+  const row = menuGroupedListEl.querySelector(`.menu-item-row[data-id="${itemId}"]`);
+  if (!row) return;
+  const item = menuState.find((entry) => entry.id === itemId);
+  if (!item) return;
+
+  const name = row.querySelector('[data-field="name"]')?.value.trim() || item.name;
+  const priceValue = row.querySelector('[data-field="price"]')?.value;
+  const description = row.querySelector('[data-field="description"]')?.value || '';
+  const category = row.querySelector('[data-field="category"]')?.value || item.category;
+  const available = row.querySelector('[data-field="available"]')?.value === 'true';
+
+  const nextPrice = Number(priceValue);
+  if (!Number.isFinite(nextPrice) || nextPrice < 0) {
+    menuMsgEl.textContent = '请输入有效价格。';
+    return;
+  }
+
+  item.name = name;
+  item.price = nextPrice;
+  item.description = description;
+  item.category = category;
+  item.available = available;
+
+  menuMsgEl.textContent = `已保存 ${name}。`;
 }
 
 function renderCategoryList() {
@@ -153,48 +383,8 @@ function renderCategoryList() {
   categoryMsgEl.textContent = `已创建 ${categoriesState.length} 个分类。`;
 }
 
-function renderZones() {
-  if (!zonesState.length) {
-    zoneListEl.innerHTML = '<div class="muted">还没有二维码，请先新增桌号/包厢。</div>';
-    return;
-  }
-
-  zoneListEl.innerHTML = zonesState
-    .map(
-      (zone) => `
-      <div class="qr-card">
-        <div class="row wrap" style="justify-content: space-between">
-          <strong class="${zone.completed ? 'zone-title completed' : 'zone-title'}">${escapeHtml(zone.label)}</strong>
-          <span class="small muted">token: ${zone.token.slice(0, 10)}...</span>
-        </div>
-        <div class="zone-meta">访问码：<strong>${escapeHtml(zone.accessCode || '----')}</strong></div>
-        <div class="zone-meta">当前订单：${zone.activeOrderCount || 0} 单 · 金额：$${Number(zone.activeOrderTotal || 0).toFixed(2)}</div>
-        ${
-          zone.completed && zone.completedAt
-            ? `<div class="zone-done-note">完成时间：${new Date(zone.completedAt).toLocaleString()}</div>`
-            : ''
-        }
-        <img src="${zone.qrPngUrl}&size=280" alt="${escapeHtml(zone.label)} 二维码" />
-        <input readonly value="${escapeHtml(zone.accessUrl)}" />
-        <div class="row wrap">
-          <button class="light" data-action="copy-url" data-url="${escapeHtml(zone.accessUrl)}">复制链接</button>
-          <a class="button-link" href="${zone.qrPngUrl}&size=720" download="${escapeHtml(zone.label)}.png">下载 PNG</a>
-          <a class="button-link" href="${zone.qrSvgUrl}" download="${escapeHtml(zone.label)}.svg">下载 SVG</a>
-          <button data-action="toggle-complete-zone" data-id="${zone.id}" class="light">${zone.completed ? '取消完成' : '标记完成'}</button>
-          <button data-action="checkout-zone" data-id="${zone.id}" class="warn">结单清零</button>
-          <button data-action="rename-zone" data-id="${zone.id}" class="light">改名</button>
-          <button data-action="regenerate-zone" data-id="${zone.id}" class="warn">重置二维码</button>
-          <button data-action="rotate-access-code" data-id="${zone.id}" class="light">轮换访问码</button>
-          <button data-action="delete-zone" data-id="${zone.id}" class="warn">删除</button>
-        </div>
-      </div>
-      `,
-    )
-    .join('');
-}
-
 function getSelectedMenuIds() {
-  return [...menuTbodyEl.querySelectorAll('input[data-menu-select]:checked')].map((el) => el.dataset.menuSelect);
+  return [...menuGroupedListEl.querySelectorAll('input[data-menu-select]:checked')].map((el) => el.dataset.menuSelect);
 }
 
 function deleteSelectedMenuRows() {
@@ -390,6 +580,10 @@ async function loadZones() {
     }
     zonesState = Array.isArray(data.zones) ? data.zones : [];
     renderZones();
+    overviewOpenZoneCount = zonesState.filter((zone) => zone.completed !== true && zone.sessionOpen !== false).length;
+    overviewCanCheckoutCount = zonesState.filter((zone) => zone.canCheckout !== false).length;
+    overviewActiveOrderZoneCount = zonesState.filter((zone) => Number(zone.activeOrderCount || 0) > 0).length;
+    syncOverviewStats();
   } finally {
     zonesLoading = false;
   }
@@ -493,7 +687,10 @@ async function renameZone(zoneId) {
 }
 
 async function regenerateZone(zoneId) {
-  const ok = confirm('重置后，旧二维码将失效。确认继续吗？');
+  const ok = confirmHighRisk(
+    '重新生成二维码后，已打印的旧二维码将永久失效。确认继续吗？',
+    '再次确认：这会让旧二维码永久失效。是否继续？',
+  );
   if (!ok) return;
 
   const res = await fetch(`/api/admin/zones/${encodeURIComponent(zoneId)}/regenerate`, {
@@ -507,7 +704,11 @@ async function regenerateZone(zoneId) {
 }
 
 async function deleteZone(zoneId) {
-  const ok = confirm('确认删除该二维码吗？');
+  const zone = zonesState.find((z) => z.id === zoneId);
+  const msg = zone
+    ? `确认删除桌台/包厢 "${zone.label}" 吗？已打印的旧二维码将永久失效，相关数据将按现有接口规则处理。`
+    : '确认删除该桌台吗？';
+  const ok = confirmHighRisk(msg, '再次确认：删除后旧二维码将永久失效。是否继续？');
   if (!ok) return;
 
   const res = await fetch(`/api/admin/zones/${encodeURIComponent(zoneId)}`, {
@@ -516,20 +717,6 @@ async function deleteZone(zoneId) {
   const data = await res.json();
   if (!res.ok) {
     throw new Error(data.error || '删除失败');
-  }
-  await loadZones();
-}
-
-async function rotateAccessCode(zoneId) {
-  const ok = confirm('轮换后，旧访问码和旧会话会立即失效。确认继续吗？');
-  if (!ok) return;
-
-  const res = await fetch(`/api/admin/zones/${encodeURIComponent(zoneId)}/access-code/rotate`, {
-    method: 'POST',
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || '轮换访问码失败');
   }
   await loadZones();
 }
@@ -548,7 +735,7 @@ async function toggleZoneCompletion(zoneId, completed) {
 }
 
 async function checkoutZone(zoneId) {
-  const ok = confirm('结单后该桌/包厢订单会自动删除清零，确认吗？');
+  const ok = confirmHighRisk('结单后该桌/包厢订单会自动删除清零，确认吗？', '再次确认：结单后当前桌台数据会被清空，是否继续？');
   if (!ok) return;
 
   const res = await fetch(`/api/admin/zones/${encodeURIComponent(zoneId)}/checkout`, {
@@ -568,6 +755,11 @@ function renderDailyReport(data) {
     reportOrdersListEl.innerHTML = '';
     return;
   }
+
+  overviewOrdersCount = Number(data.count || 0);
+  overviewOrdersAmount = Number(data.totalAmount || 0);
+  overviewUpdatedAt = new Date().toLocaleString();
+  syncOverviewStats();
 
   reportSummaryEl.textContent = `日期：${data.date} · 订单：${data.count} 单 · 总金额：${money(data.totalAmount)}`;
 
@@ -592,7 +784,7 @@ function renderDailyReport(data) {
           </div>
           <div class="small muted">时间：${new Date(order.createdAt).toLocaleString()}</div>
           <div class="small muted">下单人：${escapeHtml(customerName)}</div>
-          <div class="small muted">接单员工：${escapeHtml(handledBy)}</div>
+          <div class="small muted">订单状态处理员工：${escapeHtml(handledBy)}</div>
           <ul style="margin:8px 0">${itemsHtml}</ul>
           <div><strong>合计：${money(order.total)}</strong></div>
           <div class="small muted">备注：${escapeHtml(order.note || '无')}</div>
@@ -601,6 +793,7 @@ function renderDailyReport(data) {
     })
     .join('');
 }
+
 
 async function loadDailyReport() {
   const date = String(reportDateInputEl?.value || '').trim();
@@ -656,6 +849,8 @@ async function loadEmployees() {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || '员工加载失败');
   employeesState = Array.isArray(data.employees) ? data.employees : [];
+  overviewEmployeeCount = employeesState.length;
+  syncOverviewStats();
   renderEmployees();
 }
 
@@ -706,32 +901,70 @@ async function deleteEmployee(employeeId) {
   renderEmployees();
 }
 
-menuTbodyEl.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-action="remove-menu"]');
-  if (!button) return;
+if (menuGroupedListEl) {
+  menuGroupedListEl.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (button) {
+      const action = button.dataset.action;
+      const itemId = button.dataset.id;
+      const categoryName = button.dataset.category || '';
+      const categoryId = button.dataset.categoryId || '';
+      try {
+        if (action === 'save-menu-item') {
+          await saveMenuItem(itemId);
+          return;
+        }
+        if (action === 'remove-menu-item') {
+          menuState = menuState.filter((item) => item.id !== itemId);
+          renderMenuTable();
+          menuMsgEl.textContent = '已删除 1 个菜品，请点击“保存菜单”生效。';
+          return;
+        }
+        if (action === 'toggle-category-group') {
+          menuGroupExpanded[categoryName] = !menuGroupExpanded[categoryName];
+          renderMenuTable();
+          return;
+        }
+        if (action === 'add-item-to-category') {
+          if (!categoriesState.length) {
+            alert('请先创建分类。');
+            return;
+          }
+          menuState.push({ id: uid(), name: '新菜品', price: 0, category: categoryName || categoriesState[0].name, description: '', available: true });
+          renderMenuTable();
+          return;
+        }
+        if (action === 'rename-category-from-group') {
+          const row = categoryListEl.querySelector('tr[data-category-row="' + categoryId + '"]');
+          const input = row?.querySelector('input[data-category-field="name"]');
+          await renameCategory(categoryId, input?.value || categoryName);
+          return;
+        }
+        if (action === 'delete-category-from-group') {
+          await deleteCategory(categoryId);
+          return;
+        }
+      } catch (error) {
+        alert(`菜单操作失败：${error.message}`);
+      }
+      return;
+    }
+  });
+}
 
-  const id = button.dataset.id;
-  menuState = menuState.filter((item) => item.id !== id);
-  renderMenuTable();
-});
+if (collapseAllMenuBtnEl) {
+  collapseAllMenuBtnEl.addEventListener('click', () => {
+    for (const category of categoriesState) menuGroupExpanded[category.name] = false;
+    renderMenuTable();
+  });
+}
 
-menuSelectAllEl.addEventListener('change', () => {
-  const checked = menuSelectAllEl.checked;
-  for (const box of menuTbodyEl.querySelectorAll('input[data-menu-select]')) {
-    box.checked = checked;
-  }
-});
-
-menuTbodyEl.addEventListener('change', (event) => {
-  const box = event.target.closest('input[data-menu-select]');
-  if (!box) return;
-  const boxes = [...menuTbodyEl.querySelectorAll('input[data-menu-select]')];
-  if (!boxes.length) {
-    menuSelectAllEl.checked = false;
-    return;
-  }
-  menuSelectAllEl.checked = boxes.every((item) => item.checked);
-});
+if (expandAllMenuBtnEl) {
+  expandAllMenuBtnEl.addEventListener('click', () => {
+    menuGroupExpanded = {};
+    renderMenuTable();
+  });
+}
 
 addMenuBtnEl.addEventListener('click', () => {
   if (!categoriesState.length) {
@@ -864,6 +1097,12 @@ zoneLabelInputEl.addEventListener('keydown', async (event) => {
 });
 
 zoneListEl.addEventListener('click', async (event) => {
+  const card = event.target.closest('.manage-zone-card[data-action="select-zone"]');
+  if (card) {
+    selectZone(card.dataset.id || '');
+    return;
+  }
+
   const button = event.target.closest('button[data-action]');
   if (!button) return;
 
@@ -895,11 +1134,6 @@ zoneListEl.addEventListener('click', async (event) => {
 
     if (action === 'regenerate-zone') {
       await regenerateZone(zoneId);
-      return;
-    }
-
-    if (action === 'rotate-access-code') {
-      await rotateAccessCode(zoneId);
       return;
     }
 
@@ -961,24 +1195,48 @@ if (employeeTbodyEl) {
   });
 }
 
+function detectPage() {
+  const path = location.pathname || '';
+  if (path.endsWith('/admin_manage/menu.html')) return 'menu';
+  if (path.endsWith('/admin_manage/zones.html')) return 'zones';
+  if (path.endsWith('/admin_manage/reports.html')) return 'reports';
+  if (path.endsWith('/admin_manage/employees.html')) return 'employees';
+  return 'overview';
+}
+
+const page = detectPage();
+
 (async function init() {
   try {
-    await loadCategories();
-    await loadMenu();
-    await loadZones();
-    await loadEmployees();
-    if (!zonesRefreshTimer) {
-      zonesRefreshTimer = setInterval(() => {
-        loadZones().catch(() => {
-          // 静默失败，避免后台页面频闪
-        });
-      }, 3000);
-    }
-    if (reportDateInputEl) {
-      reportDateInputEl.value = new Date().toISOString().slice(0, 10);
-      await loadDailyReport();
+    if (page === 'overview') {
+      await loadZones();
+      await loadEmployees();
+      syncOverviewStats();
+    } else if (page === 'menu') {
+      await loadCategories();
+      await loadMenu();
+    } else if (page === 'zones') {
+      await loadZones();
+      if (!zonesRefreshTimer) {
+        zonesRefreshTimer = setInterval(() => {
+          loadZones().catch(() => {
+            // 静默失败，避免后台页面频闪
+          });
+        }, 3000);
+      }
+    } else if (page === 'reports') {
+      if (reportDateInputEl) {
+        reportDateInputEl.value = new Date().toISOString().slice(0, 10);
+        await loadDailyReport();
+      }
+    } else if (page === 'employees') {
+      await loadEmployees();
     }
   } catch (error) {
-    menuMsgEl.textContent = `初始化失败：${error.message}`;
+    if (page === 'menu') {
+      menuMsgEl.textContent = `初始化失败：${error.message}`;
+    } else if (page === 'employees') {
+      employeeManageMsgEl.textContent = `初始化失败：${error.message}`;
+    }
   }
 })();

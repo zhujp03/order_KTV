@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin 经营后台 · 报表</title>
+    <link rel="stylesheet" href="/style/main.css" />
+  </head>
+  <body>
+    <main class="app-shell manage-shell" style="width: min(1400px, 96vw);">
+      <section class="manage-layout" style="display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); gap: 20px; align-items: start;">
+        <aside class="manage-nav">
+          <div class="manage-nav-header">
+            <h1>Admin</h1>
+            <p>经营后台</p>
+          </div>
+          <nav>
+            <a class="manage-nav-link" href="/admin_manage/index.html">
+              <span class="manage-nav-icon">📊</span>
+              <span>概览</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/menu.html">
+              <span class="manage-nav-icon">🍽️</span>
+              <span>菜单</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/zones.html">
+              <span class="manage-nav-icon">🪑</span>
+              <span>桌台二维码</span>
+            </a>
+            <a class="manage-nav-link active" href="/admin_manage/reports.html">
+              <span class="manage-nav-icon">📈</span>
+              <span>报表</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/employees.html">
+              <span class="manage-nav-icon">👥</span>
+              <span>员工</span>
+            </a>
+          </nav>
+        </aside>
+
+        <section class="manage-main">
+          <header class="page-header">
+            <div class="page-header-left">
+              <h1>报表</h1>
+              <p>只读查看，不做操作</p>
+            </div>
+            <div class="page-header-right">
+              <input id="reportDateInput" type="date" />
+              <button id="loadReportBtn" class="btn-ghost">查询</button>
+            </div>
+          </header>
+
+          <section class="manage-section">
+            <div class="section-header">
+              <h2 class="section-title">当日汇总</h2>
+              <span id="reportSummary" class="section-subtitle"></span>
+            </div>
+          </section>
+
+          <section class="manage-section">
+            <div class="section-header">
+              <h2 class="section-title">订单列表</h2>
+            </div>
+            <div class="section-body">
+              <div id="reportOrdersList" class="report-orders-list"></div>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/admin_manage/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>员工接单 Windows 客户端</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Windows Employee Client</p>
+          <h1>员工接单桌面版</h1>
+          <p>复刻安卓员工端的登录、订单状态流转、包厢结单、顾客结账标记和加菜流程。</p>
+        </div>
+        <div class="hero-actions">
+          <button id="openSiteBtn" class="light">打开服务器后台</button>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <div class="section-head">
+          <div>
+            <h2>服务地址</h2>
+            <p class="muted">桌面端通过这里连接你的订单系统服务端。</p>
+          </div>
+          <span id="configSavedMsg" class="small muted"></span>
+        </div>
+        <div class="row wrap">
+          <input id="baseUrlInput" placeholder="https://order.1383karaoke.ca" />
+          <button id="saveConfigBtn" class="secondary">保存地址</button>
+          <button id="testConfigBtn" class="light">测试连接</button>
+        </div>
+        <div class="row wrap" style="margin-top: 10px">
+          <select id="printerSelect">
+            <option value="">系统默认打印机</option>
+          </select>
+          <button id="refreshPrintersBtn" class="light">刷新打印机</button>
+          <span id="printerStatus" class="small muted">打印机：未加载</span>
+        </div>
+      </section>
+
+      <section id="employeeLoginCard" class="card">
+        <h2>员工登录</h2>
+        <p class="muted">登录后进入与安卓端相同的员工接单流程。</p>
+        <div class="row wrap">
+          <input id="employeeUsernameInput" placeholder="用户名" />
+          <input id="employeePasswordInput" type="password" placeholder="密码" />
+          <button id="employeeLoginBtn" class="secondary">登录</button>
+        </div>
+        <p id="employeeLoginMsg" class="small muted"></p>
+      </section>
+
+      <section class="card toolbar-card">
+        <div class="row wrap space-between">
+          <div class="row wrap">
+            <span id="currentEmployeeLabel" class="small muted">当前员工：未登录</span>
+            <label for="statusFilter" class="small muted">状态筛选</label>
+            <select id="statusFilter">
+              <option value="">全部</option>
+              <option value="new">新单</option>
+              <option value="preparing">制作中</option>
+              <option value="ready">待上桌</option>
+              <option value="served">已完成</option>
+              <option value="cancelled">已取消</option>
+            </select>
+          </div>
+          <div class="row wrap">
+            <button class="light" id="employeeLogoutBtn">退出登录</button>
+            <button class="light" id="soundToggleBtn">提示音关闭</button>
+            <button class="light" id="refreshBtn">立即刷新</button>
+            <span id="lastUpdated" class="small muted">未刷新</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="board">
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <h2>包厢 / 桌号</h2>
+              <p class="muted">查看当前 session、未结情况与结单状态。</p>
+            </div>
+          </div>
+          <div id="zoneTodoWrap" class="grid"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <h2>订单列表</h2>
+              <p id="writeQueueStatus" class="small muted">写入队列：-</p>
+            </div>
+          </div>
+          <div id="ordersWrap" class="grid orders-grid"></div>
+        </article>
+      </section>
+    </main>
+
+    <div id="zoneSessionDrawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="zoneSessionDrawer" class="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <h3 id="zoneSessionTitle">包厢订单</h3>
+          <div id="zoneSessionMeta" class="small muted"></div>
+        </div>
+        <button class="light" id="zoneSessionCloseBtn" aria-label="关闭">关闭</button>
+      </div>
+      <div id="zoneSessionOrdersWrap" class="drawer-body"></div>
+      <div class="drawer-footer">
+        <button class="warn" id="zoneSessionCheckoutBtn">结单清零</button>
+      </div>
+    </aside>
+
+    <div id="orderItemMenuBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="orderItemMenuModal" class="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <h3 id="orderItemMenuTitle">选择加菜</h3>
+          <div class="small muted">点击菜品后会直接加入当前订单。</div>
+        </div>
+        <button class="light" id="orderItemMenuCloseBtn" aria-label="关闭">关闭</button>
+      </div>
+      <div id="orderItemMenuList" class="drawer-body"></div>
+    </aside>
+
+    <audio id="newOrderAudio" preload="auto" src="../assets/uber_eats.mp3"></audio>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

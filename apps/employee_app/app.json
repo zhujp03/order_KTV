@@ -1,4 +1,14 @@
 {
   "name": "EmployeeApp",
-  "displayName": "EmployeeApp"
+  "displayName": "EmployeeApp",
+  "expo": {
+    "android": {
+      "softwareKeyboardLayoutMode": "pan",
+      "screenOrientation": "landscape"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "requireFullScreen": true
+    }
+  }
 }

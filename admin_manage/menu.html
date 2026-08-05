@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin 经营后台 · 菜单</title>
+    <link rel="stylesheet" href="/style/main.css" />
+  </head>
+  <body>
+    <main class="app-shell manage-shell" style="width: min(1400px, 96vw);">
+      <section class="manage-layout" style="display: grid; grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); gap: 20px; align-items: start;">
+        <aside class="manage-nav">
+          <div class="manage-nav-header">
+            <h1>Admin</h1>
+            <p>经营后台</p>
+          </div>
+          <nav>
+            <a class="manage-nav-link" href="/admin_manage/index.html">
+              <span class="manage-nav-icon">📊</span>
+              <span>概览</span>
+            </a>
+            <a class="manage-nav-link active" href="/admin_manage/menu.html">
+              <span class="manage-nav-icon">🍽️</span>
+              <span>菜单</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/zones.html">
+              <span class="manage-nav-icon">🪑</span>
+              <span>桌台二维码</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/reports.html">
+              <span class="manage-nav-icon">📈</span>
+              <span>报表</span>
+            </a>
+            <a class="manage-nav-link" href="/admin_manage/employees.html">
+              <span class="manage-nav-icon">👥</span>
+              <span>员工</span>
+            </a>
+          </nav>
+        </aside>
+
+        <section class="manage-main">
+          <header class="page-header">
+            <div class="page-header-left">
+              <h1>菜单</h1>
+              <p>按分类维护菜品</p>
+            </div>
+            <div class="page-header-right">
+              <button id="saveMenuBtn" class="btn-primary">保存菜单</button>
+              <button id="addMenuBtn" class="btn-ghost">新增菜品</button>
+            </div>
+          </header>
+
+          <section class="manage-section">
+            <div class="section-header">
+              <h2 class="section-title">分类管理</h2>
+              <span id="categoryMsg" class="section-subtitle">请先创建分类</span>
+            </div>
+            <div class="section-body">
+              <div class="form-row">
+                <input id="categoryNameInput" placeholder="新分类名" />
+                <button id="addCategoryBtn" class="btn-ghost">创建分类</button>
+              </div>
+              <div id="categoryList" class="category-list"></div>
+            </div>
+          </section>
+
+          <section class="manage-section">
+            <div class="section-header">
+              <h2 class="section-title">批量导入</h2>
+            </div>
+            <div class="section-body">
+              <textarea id="bulkMenuInput" placeholder="粘贴 Category/Name/Price/Description 文本"></textarea>
+              <div class="form-row" style="margin-top: 10px;">
+                <button id="bulkImportBtn" class="btn-ghost">批量导入</button>
+                <span id="bulkImportMsg" class="section-subtitle"></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="manage-section">
+            <div class="section-header">
+              <h2 class="section-title">菜品按分类分组</h2>
+              <div class="section-actions">
+                <button id="collapseAllMenuBtn" class="btn-ghost small" type="button">全部折叠</button>
+                <button id="expandAllMenuBtn" class="btn-ghost small" type="button">全部展开</button>
+                <button id="deleteAllMenuBtn" class="btn-danger small" type="button">全部删除</button>
+              </div>
+            </div>
+            <div class="section-body">
+              <div id="menuGroupedList" class="menu-grouped-list"></div>
+              <p id="menuMsg" class="section-subtitle" style="margin: 10px 0 0;"></p>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/admin_manage/app.js"></script>
+  </body>
+</html>

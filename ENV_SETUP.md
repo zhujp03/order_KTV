@@ -20,12 +20,22 @@
 4. 启动：
    - `npm start`
 
-## 3) 防止“离店后继续点单”的机制（已实现）
-- 每个桌/包厢除了二维码 token，还有一个 `Access Code`（管理端可见）。
-- 客人扫码后，必须输入该桌访问码，才可以同步购物车和提交订单。
-- 服务端给该设备发短期会话（`ZONE_SESSION_TTL_MINUTES`），过期后需要重新输入访问码。
-- 结单时默认自动轮换访问码并废弃旧会话（`ROTATE_ACCESS_CODE_ON_CHECKOUT=true`）。
-- 管理端可手动“轮换访问码”，立即让旧会话失效。
+当前实际 AWS `.env` 已由项目负责人确认：`ZONE_ACCESS_CODE_REQUIRED=false`，Access Code 不参与 AWS 点单流程。
+
+## 3) 当前目标访问流程
+
+- 员工未开台时，顾客扫码后不能点单。
+- 员工开台后，顾客输入姓名即可建立短期会话并点单。
+- 服务端继续使用 `ZONE_SESSION_TTL_MINUTES` 控制顾客会话有效期；结单会撤销该桌顾客会话。
+- Access Code 已被产品废弃。SQLite 中现有兼容字段保留，但 Android、顾客页和 `admin_manage` 不显示、不输入、不发送、不核验，也不提供轮换入口。
+- 当前源码仍保留 Access Code 条件校验和轮换兼容代码，因此所有实际部署必须显式设置：
+
+```env
+ZONE_ACCESS_CODE_REQUIRED=false
+ROTATE_ACCESS_CODE_ON_CHECKOUT=false
+```
+
+- 未来若要删除字段或后端兼容代码，必须另开后端清理任务；本次 UI 重构不做。
 
 ## 4) 关键变量
 - `PUBLIC_BASE_URL`: 二维码里生成的访问地址根域名
@@ -34,6 +44,6 @@
 - `SQLITE_BUSY_TIMEOUT_MS`: SQLite 锁等待时间（毫秒）
 - `WRITE_QUEUE_ENABLED`: 是否启用写入 FIFO 队列
 - `WRITE_QUEUE_MAX_SIZE`: 写入队列最大积压数
-- `ZONE_ACCESS_CODE_REQUIRED`: 是否启用访问码拦截
+- `ZONE_ACCESS_CODE_REQUIRED`: 兼容开关；当前产品必须为 `false`
 - `ZONE_SESSION_TTL_MINUTES`: 客人会话有效期（分钟）
-- `ROTATE_ACCESS_CODE_ON_CHECKOUT`: 结单是否自动轮换访问码
+- `ROTATE_ACCESS_CODE_ON_CHECKOUT`: 兼容开关；当前产品必须为 `false`

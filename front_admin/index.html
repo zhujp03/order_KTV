@@ -9,12 +9,12 @@
   <body>
     <main class="app-shell">
       <section class="hero">
-        <h1>Admin 接单看板</h1>
-        <p>按照桌号/包厢实时接收订单，支持状态流转（新单 -> 制作中 -> 待上桌 -> 已完成）。</p>
+        <h1 id="heroTitle">Admin 接单看板</h1>
+        <p id="heroSubtitle">按照桌号/包厢实时接收订单，支持状态流转（新单 -> 制作中 -> 待上桌 -> 已完成）。</p>
       </section>
 
       <section id="employeeLoginCard" class="card" style="margin-top: 14px">
-        <h2>员工登录</h2>
+        <h2 id="employeeLoginTitle">员工登录</h2>
         <div class="row wrap" style="margin-top: 8px">
           <input id="employeeUsernameInput" placeholder="用户名" style="max-width: 220px" />
           <input id="employeePasswordInput" type="password" placeholder="密码" style="max-width: 220px" />
@@ -40,6 +40,7 @@
           <div class="row wrap">
             <button class="light" id="employeeLogoutBtn">退出登录</button>
             <button class="light" id="soundToggleBtn">Sound Off</button>
+            <button class="light" id="langToggleBtn">中文 / EN</button>
             <button class="light" id="refreshBtn">立即刷新</button>
             <span id="lastUpdated" class="small muted">未刷新</span>
           </div>
@@ -48,13 +49,13 @@
 
       <section class="admin-board" style="margin-top: 16px">
         <article class="card">
-          <h2>桌号 / 包厢待办</h2>
-          <p class="small muted">显示当前包厢状态与访问码，可直接“结单清零”。</p>
+          <h2 id="zoneTodoTitle">桌号 / 包厢待办</h2>
+          <p id="zoneTodoSubtitle" class="small muted">显示当前包厢状态与访问码，可直接“结单清零”。</p>
           <div id="zoneTodoWrap" class="grid" style="margin-top: 8px"></div>
         </article>
 
         <article class="card">
-          <h2>来单信息</h2>
+          <h2 id="ordersTitle">来单信息</h2>
           <p id="writeQueueStatus" class="small muted">写入队列：-</p>
           <div id="ordersWrap" class="grid admin-orders-grid" style="margin-top: 8px"></div>
         </article>
@@ -80,7 +81,7 @@
         <div class="admin-drawer-head">
           <div>
             <h3 id="orderItemMenuTitle">选择加菜</h3>
-            <div class="small muted">点击菜品后会直接加到当前订单</div>
+            <div id="orderItemMenuSubtitle" class="small muted">点击菜品后会直接加到当前订单</div>
           </div>
           <button class="light" id="orderItemMenuCloseBtn" aria-label="关闭">✕</button>
         </div>
